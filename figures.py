@@ -1,8 +1,10 @@
 """Figures for the article and the poster, from results/: python figures.py
 
 Writes results/figures/*.png (300 dpi, for a Word document) and *.svg (for a
-poster). Labels are in Portuguese, the article's language. Everything is read
-from the CSVs that analyze.py reads; nothing here is typed in by hand.
+poster), labelled in English. FIGURES_LANG=pt writes the same figures labelled
+in Portuguese, the language of the COBRIC article, into results/figures/pt/.
+Everything is read from the CSVs that analyze.py reads; nothing here is typed
+in by hand.
 """
 import csv
 import os
@@ -16,7 +18,19 @@ from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(HERE, "results")
-OUT = os.path.join(RESULTS, "figures")
+LANG = os.environ.get("FIGURES_LANG", "en")
+if LANG not in ("en", "pt"):
+    raise SystemExit("FIGURES_LANG is en or pt, not %r" % LANG)
+OUT = os.path.join(RESULTS, "figures", *(["pt"] if LANG == "pt" else []))
+
+
+def tr(en, pt):
+    return pt if LANG == "pt" else en
+
+
+def count(n):
+    """A count as the language writes it: 12,345 or 12.345."""
+    return f"{n:,}".replace(",", tr(",", "."))
 
 C_COLOR = "#c0392b"
 SWORD_COLOR = "#2c3e50"
@@ -24,22 +38,29 @@ LIGHT = "#95a5a6"
 
 PLATFORM_NAMES = {
     "macos-arm64": "macOS, Apple M4",
-    "linux-arm64-docker": "Linux arm64 (VM no M4)",
+    "linux-arm64-docker": tr("Linux arm64 (VM on the M4)", "Linux arm64 (VM no M4)"),
     "gh-linux-x86_64": "Linux x86-64 (GitHub)",
     "gh-linux-arm64": "Linux arm64 (GitHub)",
     "gh-macos-arm64": "macOS M1 (GitHub)",
+    "macos-arm64-atomic": tr("macOS, Apple M4, atomic reduction",
+                             "macOS, Apple M4, redução atômica"),
 }
+
+# Runs that are not another machine but the same one done differently: the M4
+# with libomp forced to an atomic reduction, which only E1b asks about. Counted
+# as a platform anywhere else it would be the M4 twice.
+VARIANTS = {"macos-arm64-atomic"}
 
 METHOD_NAMES = {
     "c-serial": "C serial",
     "c-omp": "C OpenMP",
     "c-ompkahan": "C OpenMP + Kahan",
-    "c-thread": "C, gerador por thread",
-    "c-index": "C, gerador por índice",
+    "c-thread": tr("C, a generator per thread", "C, gerador por thread"),
+    "c-index": tr("C, a generator by index", "C, gerador por índice"),
     "c-philox": "C, Philox",
     "sword-plain": "Sword reduce(+)",
     "sword-kahan": "Sword Kahan",
-    "sword-exact": "Sword exata",
+    "sword-exact": tr("Sword exact", "Sword exata"),
     "sword-mix": "Sword, splitmix",
 }
 
@@ -49,9 +70,10 @@ def rows(path):
         return list(csv.DictReader(f))
 
 
-def platforms():
+def platforms(variants=False):
     return sorted(p for p in os.listdir(RESULTS)
-                  if os.path.isfile(os.path.join(RESULTS, p, "env.txt")))
+                  if os.path.isfile(os.path.join(RESULTS, p, "env.txt"))
+                  and (variants or p not in VARIANTS))
 
 
 def ordered(bits):
@@ -84,7 +106,8 @@ def distinct_everywhere():
     """How many different answers each method gave over every platform and
     thread count."""
     names = platforms()
-    panels = [("E1: soma de 10⁷ doubles (dados mistos)", "sum.csv", "mixed"),
+    panels = [(tr("E1: sum of 10⁷ doubles (mixed data)",
+                  "E1: soma de 10⁷ doubles (dados mistos)"), "sum.csv", "mixed"),
               ("E2: Monte Carlo, ∫₀¹ e^(−x²) dx", "mc.csv", None)]
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.8))
     for ax, (title, file, dataset) in zip(axes, panels):
@@ -105,13 +128,15 @@ def distinct_everywhere():
                     str(n), va="center", fontsize=9)
         ax.invert_yaxis()
         ax.set_title(title, fontsize=10)
-        ax.set_xlabel("resultados diferentes em %d execuções" %
+        ax.set_xlabel(tr("different results in %d runs",
+                         "resultados diferentes em %d execuções") %
                       (len(names) * 8))
         ax.set_xlim(0, max(counts) + 2)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-    fig.suptitle("%d plataformas × 8 números de threads (1 a 16)" % len(names),
+    fig.suptitle(tr("%d platforms × 8 thread counts (1 to 16)",
+                    "%d plataformas × 8 números de threads (1 a 16)") % len(names),
                  fontsize=10, y=0.98)
-    save(fig, "f1-resultados-distintos")
+    save(fig, tr("f1-distinct-results", "f1-resultados-distintos"))
 
 
 def error_by_threads(platform="macos-arm64"):
@@ -131,11 +156,13 @@ def error_by_threads(platform="macos-arm64"):
     ax.set_xticks([1, 2, 3, 4, 6, 8, 10, 16])
     ax.set_xticklabels(["1", "2", "3", "4", "6", "8", "10", "16"])
     ax.set_xlabel("threads")
-    ax.set_ylabel("erro (ULPs) contra a soma exata")
-    ax.set_title("E1: o erro muda com o número de threads? (%s)" %
+    ax.set_ylabel(tr("error (ULPs) against the exact sum",
+                     "erro (ULPs) contra a soma exata"))
+    ax.set_title(tr("E1: does the error change with the thread count? (%s)",
+                    "E1: o erro muda com o número de threads? (%s)") %
                  PLATFORM_NAMES[platform], fontsize=10)
     ax.legend(fontsize=8)
-    save(fig, "f2-erro-por-threads")
+    save(fig, tr("f2-error-by-threads", "f2-erro-por-threads"))
 
 
 def time_by_threads(platform="macos-arm64"):
@@ -155,16 +182,17 @@ def time_by_threads(platform="macos-arm64"):
     ax.set_xticks([1, 2, 3, 4, 6, 8, 10, 16])
     ax.set_xticklabels(["1", "2", "3", "4", "6", "8", "10", "16"])
     ax.set_xlabel("threads")
-    ax.set_ylabel("tempo (ms, mediana de 7)")
-    ax.set_title("E1: custo da soma de 10⁷ doubles (%s)" %
+    ax.set_ylabel(tr("time (ms, median of 7)", "tempo (ms, mediana de 7)"))
+    ax.set_title(tr("E1: cost of summing 10⁷ doubles (%s)",
+                    "E1: custo da soma de 10⁷ doubles (%s)") %
                  PLATFORM_NAMES[platform], fontsize=10)
     ax.legend(fontsize=8)
-    save(fig, "f3-tempo-por-threads")
+    save(fig, tr("f3-time-by-threads", "f3-tempo-por-threads"))
 
 
 def repeatability():
     """Distinct answers in 100 identical runs, thread count fixed."""
-    names = platforms()
+    names = platforms(variants=True)
     fig, ax = plt.subplots(figsize=(7.5, 3.8))
     threads = ["2", "4", "8", "16"]
     width = 0.8 / (len(names) + 1)
@@ -186,13 +214,16 @@ def repeatability():
                     if r["method"] == "sword-plain" and r["threads"] == t}
         sword.append(max(sum(1 for q, _ in got if q == p) for p in names))
     xs = [k + len(names) * width for k in range(len(threads))]
-    ax.bar(xs, sword, width, label="Sword reduce(+) — todas", color=SWORD_COLOR)
+    ax.bar(xs, sword, width, label=tr("Sword reduce(+) — all", "Sword reduce(+) — todas"),
+           color=SWORD_COLOR)
     ax.set_xticks([k + len(names) * width / 2 for k in range(len(threads))])
     ax.set_xticklabels([t + " threads" for t in threads])
-    ax.set_ylabel("resultados diferentes em 100 execuções")
-    ax.set_title("E1b: a mesma configuração, repetida 100 vezes", fontsize=10)
+    ax.set_ylabel(tr("different results in 100 runs",
+                     "resultados diferentes em 100 execuções"))
+    ax.set_title(tr("E1b: the same configuration, run 100 times",
+                    "E1b: a mesma configuração, repetida 100 vezes"), fontsize=10)
     ax.legend(fontsize=7, ncol=2)
-    save(fig, "f4-repetibilidade")
+    save(fig, tr("f4-repeatability", "f4-repetibilidade"))
 
 
 def load_bits(platform, impl, fn):
@@ -212,21 +243,23 @@ def cross_platform(a="gh-linux-x86_64", b="macos-arm64"):
     fig, ax = plt.subplots(figsize=(6.5, 3.6))
     ks = range(len(fns))
     bars = ax.bar([k - 0.2 for k in ks], libm, 0.4, color=C_COLOR,
-                  label="biblioteca C do sistema (libm)")
+                  label=tr("the system's C library (libm)",
+                           "biblioteca C do sistema (libm)"))
     ax.bar([k + 0.2 for k in ks], num, 0.4, color=SWORD_COLOR, label="Sword std/num")
     for bar, n in zip(bars, libm):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.1, f"{n:,}".replace(",", "."),
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.1, count(n),
                 ha="center", fontsize=8)
     for k, n in zip(ks, num):
         ax.text(k + 0.2, 1.2, str(n), ha="center", fontsize=8, color=SWORD_COLOR)
     ax.set_yscale("symlog", linthresh=1)
     ax.set_xticks(list(ks))
     ax.set_xticklabels(fns)
-    ax.set_ylabel("resultados diferentes (de 10⁶)")
-    ax.set_title("E3: os mesmos argumentos em %s e %s" %
+    ax.set_ylabel(tr("different results (of 10⁶)", "resultados diferentes (de 10⁶)"))
+    ax.set_title(tr("E3: the same arguments on %s and %s",
+                    "E3: os mesmos argumentos em %s e %s") %
                  (PLATFORM_NAMES[a], PLATFORM_NAMES[b]), fontsize=9)
     ax.legend(fontsize=8)
-    save(fig, "f5-funcoes-entre-plataformas")
+    save(fig, tr("f5-functions-across-platforms", "f5-funcoes-entre-plataformas"))
 
 
 def function_cost(platform="macos-arm64"):
@@ -242,11 +275,12 @@ def function_cost(platform="macos-arm64"):
            color=SWORD_COLOR, label="Sword std/num")
     ax.set_xticks(list(ks))
     ax.set_xticklabels([label for _, label in fns], fontsize=8)
-    ax.set_ylabel("ns por chamada")
-    ax.set_title("E3: custo das funções elementares (%s)" % PLATFORM_NAMES[platform],
+    ax.set_ylabel(tr("ns per call", "ns por chamada"))
+    ax.set_title(tr("E3: cost of the elementary functions (%s)",
+                    "E3: custo das funções elementares (%s)") % PLATFORM_NAMES[platform],
                  fontsize=10)
     ax.legend(fontsize=8)
-    save(fig, "f6-custo-das-funcoes")
+    save(fig, tr("f6-function-cost", "f6-custo-das-funcoes"))
 
 
 def main():
