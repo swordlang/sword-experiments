@@ -67,7 +67,7 @@ if has cpp; then
     echo "cpp-thread|$build/cpp|" >> "$progs"
 fi
 if has rust; then
-    cargo build --quiet --release --manifest-path "$here/rust/Cargo.toml" --target-dir "$build/rust"
+    cargo build --quiet --release --locked --manifest-path "$here/rust/Cargo.toml" --target-dir "$build/rust"
     cp "$here/rust/Cargo.lock" "$out/compare-Cargo.lock"
     echo "rust-rayon|$build/rust/release/bench|" >> "$progs"
 fi
