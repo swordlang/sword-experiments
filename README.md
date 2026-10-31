@@ -101,8 +101,11 @@ What the tables do not show on their own:
 - Sword's `parallel for` may write an array only at the index it is on, so its
   stencil walks the grid as one range and finds the row and column by dividing.
   The other languages loop over rows.
-- Sword's `num.Sqrt` is computed in software (fdlibm's bit-by-bit root), not by
-  the processor's instruction; `nbody` calls it 67 million times.
+- `nbody` calls `num.Sqrt` 67 million times. Up to Sword's develop 8be3586 it
+  was computed in software (fdlibm's bit-by-bit root), and Sword's `nbody` took
+  18 257 / 13 191 / 14 165 ms at one thread on x86-64, N2 and the M2 Pro (commit
+  7463b61 here has that run). From 5401ffd it is the processor's instruction,
+  with the same bits.
 - How rows are handed out follows each language's habit: OpenMP's `dynamic`,
   rayon's work stealing, rows dealt in turn in C++, Zig and Go, Sword's fixed
   pieces.
@@ -182,9 +185,10 @@ docker run --rm -v "$PWD/sword.tar:/sword.tar:ro" -v "$PWD:/exp" sword-ci:arm64 
 - During the run on the M4, a stuck process (Sword issue #41) held ~10% of one
   of the ten cores; it is noted in `env.txt`.
 - E4 (`results/gh-*/compare*`, tables in `results/compare.md`) is newer than
-  the rest: Sword at commit `8be3586` of `develop`, after 0.3.2, on an AMD EPYC
-  7763, an arm64 Neoverse N2 (4 cores each) and a virtual Apple M2 Pro (5
-  cores), three rounds of five repetitions. Each `compare-env.txt` has every
+  the rest: Sword at commit `5401ffd` of `develop`, after 0.3.2, on an AMD EPYC
+  7763, an arm64 Neoverse N2 (4 cores each) and a virtual Apple M1 (3 cores;
+  GitHub's macOS runner gave a virtual M2 Pro with 5 cores to the run before,
+  7463b61), three rounds of five repetitions. Each `compare-env.txt` has every
   compiler's version and flags.
 - In E4's `sum`, Sword gave one answer on every machine at every thread count.
   The other parallel methods gave one per thread count, and rayon more than
