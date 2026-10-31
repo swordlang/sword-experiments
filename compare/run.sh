@@ -45,7 +45,7 @@ has() { case " $LANGS " in *" $1 "*) return 0 ;; esac; return 1; }
     has c && echo "c: $($CC --version | head -1); $CFLAGS $OMPFLAGS"
     has cpp && echo "cpp: $($CXX --version | head -1); $CXXFLAGS"
     has rust && echo "rust: $(rustc --version), $(cargo --version); cargo build --release; rayon $(sed -n 's/^rayon = "=\(.*\)"/\1/p' "$here/rust/Cargo.toml")"
-    has zig && echo "zig: $(zig version); -O ReleaseSafe and -O ReleaseFast"
+    has zig && echo "zig: $(zig version); -O safe and -O fast"
     has go && echo "go: $(go version); go build"
     [ -n "$NOTE" ] && echo "note: $NOTE"
 } > "$out/compare-env.txt"
@@ -72,11 +72,11 @@ if has rust; then
     echo "rust-rayon|$build/rust/release/bench|" >> "$progs"
 fi
 if has zig; then
-    for mode in ReleaseSafe ReleaseFast; do
+    for mode in safe fast; do
         zig build-exe -O $mode "$here/zig/bench.zig" -femit-bin="$build/zig-$mode" \
             --cache-dir "$build/zig-cache" --global-cache-dir "$build/zig-cache"
     done
-    printf '%s\n' "zig-safe|$build/zig-ReleaseSafe|" "zig-fast|$build/zig-ReleaseFast|" >> "$progs"
+    printf '%s\n' "zig-safe|$build/zig-safe|" "zig-fast|$build/zig-fast|" >> "$progs"
 fi
 if has go; then
     (cd "$here/go" && go build -o "$build/go" .)

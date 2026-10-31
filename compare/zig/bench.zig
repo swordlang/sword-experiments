@@ -1,6 +1,6 @@
 // The five kernels of the comparison in Zig, with std.Thread: the range is cut
 // into one block per thread, and partial sums are combined in block order.
-// Built twice: ReleaseSafe keeps the bounds checks, ReleaseFast drops them.
+// Built twice: -O safe keeps the bounds checks, -O fast drops them.
 //
 //   bench <kernel> <threads> [reps]
 //
@@ -266,7 +266,7 @@ pub fn main(init: std.process.Init) !void {
         var j = i;
         while (j > 0 and ts[j - 1] > ts[j]) : (j -= 1) std.mem.swap(u64, &ts[j - 1], &ts[j]);
     }
-    const method = if (builtin.mode == .ReleaseSafe) "zig-safe" else "zig-fast";
+    const method = if (builtin.mode == .safe) "zig-safe" else "zig-fast";
     var buf: [256]u8 = undefined;
     var w: std.Io.File.Writer = .init(.stdout(), io, &buf);
     const out = &w.interface;
