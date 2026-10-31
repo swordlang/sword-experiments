@@ -1,10 +1,10 @@
 platform: gh-linux-x86_64
-date: 2026-10-31T02:02:03Z
+date: 2026-10-31T17:08:44Z
 uname: Linux 7.0.0-1017-azure x86_64
 cpu: AMD EPYC 7763 64-Core Processor
 cores: 4
 threads: 1 2 4 8 16 reps: 5 rounds: 3
-sword: shield 0.3.2 (Quench), commit 8be3586, default flags
+sword: shield 0.3.2 (Quench), commit 5401ffd, default flags
 c: gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0; -O2 -fopenmp
 cpp: g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0; -std=c++17 -O2 -pthread
 rust: rustc 1.99.1 (58cf8f9c3 2026-10-13), cargo 1.99.1 (5f94df478 2026-08-27); cargo build --release; rayon 1.12.0
