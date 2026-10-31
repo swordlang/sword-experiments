@@ -9,12 +9,18 @@ on:
       sword_ref:
         description: Sword branch, tag or commit to build
         default: develop
+      experiments:
+        description: Which experiments to run
+        type: choice
+        options: [reproducibility, compare, both]
+        default: reproducibility
 
 permissions:
   contents: read
 
 jobs:
   run:
+    if: inputs.experiments != 'compare'
     strategy:
       fail-fast: false
       matrix:
@@ -62,3 +68,90 @@ jobs:
         with:
           name: ${{ matrix.platform }}
           path: sword-experiments/results/${{ matrix.platform }}
+
+  # The same five kernels in Sword, C, C++, Rust, Zig and Go (compare/). The
+  # toolchains are pinned here, and the Go and Zig archives checked against
+  # the hashes their sites publish.
+  compare:
+    if: inputs.experiments != 'reproducibility'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: gh-linux-x86_64
+            go: linux-amd64
+            go_sha256: 65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+            zig: x86_64-linux
+            zig_sha256: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+          - runner: ubuntu-24.04-arm
+            platform: gh-linux-arm64
+            go: linux-arm64
+            go_sha256: a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
+            zig: aarch64-linux
+            zig_sha256: 9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8
+          - runner: macos-latest
+            platform: gh-macos-arm64
+            go: darwin-arm64
+            go_sha256: dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2
+            zig: aarch64-macos
+            zig_sha256: b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a
+    name: compare ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      RUST_VERSION: 1.99.1
+      GO_VERSION: 1.27.3
+      ZIG_VERSION: 0.17.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: sword-experiments
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: swordlang/sword
+          ref: ${{ inputs.sword_ref }}
+          path: sword
+
+      - name: Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libssl-dev
+      - name: Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
+      - name: Toolchains
+        run: |
+          mkdir -p "$RUNNER_TEMP/tools"
+          cd "$RUNNER_TEMP/tools"
+          go=go$GO_VERSION.${{ matrix.go }}.tar.gz
+          curl -sSfLO "https://go.dev/dl/$go"
+          echo "${{ matrix.go_sha256 }}  $go" | shasum -a 256 -c
+          tar -xzf "$go"
+          zig=zig-${{ matrix.zig }}-$ZIG_VERSION
+          curl -sSfLO "https://ziglang.org/download/$ZIG_VERSION/$zig.tar.xz"
+          echo "${{ matrix.zig_sha256 }}  $zig.tar.xz" | shasum -a 256 -c
+          tar -xJf "$zig.tar.xz"
+          echo "$PWD/go/bin" >> "$GITHUB_PATH"
+          echo "$PWD/$zig" >> "$GITHUB_PATH"
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+
+      - name: Build Sword
+        run: make -C sword
+
+      - name: Run
+        working-directory: sword-experiments
+        env:
+          CC: ${{ runner.os == 'Linux' && 'gcc' || 'cc' }}
+          CXX: ${{ runner.os == 'Linux' && 'g++' || 'c++' }}
+          SHIELD: ${{ github.workspace }}/sword/shield
+          NOTE: GitHub-hosted runner ${{ matrix.runner }}, shared with other jobs; times are indicative
+        run: ./compare/run.sh ${{ matrix.platform }}
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.platform }}-compare
+          path: sword-experiments/results/${{ matrix.platform }}/compare*

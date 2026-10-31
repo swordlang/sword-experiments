@@ -1,7 +1,9 @@
 # Experiments: bit-for-bit reproducibility in parallel computing
 
-The experiments behind the article for the 18th COBRIC. Each one compares C with
-OpenMP, written the way it usually is, against Sword.
+E1 to E3 are the experiments behind the article for the 18th COBRIC. Each one
+compares C with OpenMP, written the way it usually is, against Sword. E4 puts
+the same parallel loops side by side in six languages, for their speed as much
+as for the bits of their answers.
 
 ## What each experiment measures
 
@@ -55,6 +57,56 @@ argument reduction), `exp` in [−700, 700] and in [−1, 0], `log` across 600
 orders of magnitude. The system's libm against `std/num`. The bits of every
 result are kept in `results/<platform>/bits/`, to compare platforms.
 
+**E4 — Sword against C, C++, Rust, Zig and Go** (`compare/`). Five kernels, the
+same algorithm in every language, written the way that language usually writes
+a parallel loop. The inputs come from splitmix64 with a fixed seed, generated
+inside each program, so every one starts from the same bits.
+
+| kernel | what it does | size |
+|---|---|---|
+| `sum` | the sum of doubles in [−1, 1) | 10⁷ |
+| `saxpy` | `y[i] = a·x[i] + y[i]` | 10⁷ |
+| `stencil` | Jacobi, 5 points, boundary held fixed | 2048 × 2048, 10 steps |
+| `mandelbrot` | iterations summed over the image | 2000 × 2000, at most 256 |
+| `nbody` | every body against every other, softened | 4096 bodies, 4 steps |
+
+| method | how the loop is parallel | bounds checked |
+|---|---|---|
+| `sword` | `parallel for`, `reduce(+)` | yes, except where the compiler proves them away |
+| `c-serial` | not: one thread | no |
+| `c-restrict` | not: one thread, every pointer `restrict` | no |
+| `c-omp` | `#pragma omp parallel for` | no |
+| `cpp-thread` | `std::thread`, one block per thread | no |
+| `rust-rayon` | rayon's parallel iterators | yes |
+| `zig-safe` | `std.Thread`, one block per thread, `-O safe` | yes |
+| `zig-fast` | the same, `-O fast` | no |
+| `go` | goroutines, one block per thread | yes |
+
+Each program prints the median time over its repetitions and a check: the bits
+of the answer (the sum, for the kernels that produce an array, taken in index
+order outside the timing), or for `mandelbrot` the count. `compare/run.sh` runs
+every method at every thread count once per round, all of them in turn, so that
+no language always gets the cold or the hot machine; the tables take the
+median across rounds and count how many different checks each method gave.
+
+What the tables do not show on their own:
+
+- On arm64, C and C++ (GCC and clang alike) and Go fuse `a*b + c` into one
+  instruction, rounded once, where Sword, Rust and Zig round the product and the
+  sum apart. It moves the count of `mandelbrot` there: 269 789 418 for C and
+  C++, 269 789 415 for Go, 269 789 451 for the rest, and C with
+  `-ffp-contract=off` or Go with the products converted explicitly give
+  269 789 451 too. Baseline x86-64 has no such instruction, and there every
+  method agrees on every kernel.
+- Sword's `parallel for` may write an array only at the index it is on, so its
+  stencil walks the grid as one range and finds the row and column by dividing.
+  The other languages loop over rows.
+- Sword's `num.Sqrt` is computed in software (fdlibm's bit-by-bit root), not by
+  the processor's instruction; `nbody` calls it 67 million times.
+- How rows are handed out follows each language's habit: OpenMP's `dynamic`,
+  rayon's work stealing, rows dealt in turn in C++, Zig and Go, Sword's fixed
+  pieces.
+
 ## Running them
 
 It needs a C compiler with OpenMP, Python 3, and Sword's compiler built (`make`
@@ -74,6 +126,19 @@ platforms; F6 the cost of the elementary functions. They are labelled in
 English; `FIGURES_LANG=pt` writes the same figures in Portuguese, the article's
 language, to `results/figures/pt/`. The ones there are the article's, as
 published.
+
+E4 needs, besides those, a C++ compiler, `cargo`, `zig` and `go`:
+
+```sh
+SHIELD=../sword/shield ./compare/run.sh <platform-name>
+python3 compare/analyze.py > results/compare.md
+```
+
+`LANGS` (`"sword c cpp rust zig go"`), `KERNELS`, `THREADS` (`"1 2 4 8 16"`),
+`REPS` (5) and `ROUNDS` (3) narrow it down. The versions and flags of every
+compiler go into `compare-env.txt`, and the `Cargo.lock` that was built with
+into `compare-Cargo.lock`. On GitHub, the workflow takes `experiments: compare`
+(or `both`), with Rust, Go and Zig at the versions it pins.
 
 `ONLY=math` runs only E3, which needs no OpenMP. `NOTE="..."` records a note
 about the machine in `env.txt` (that it is emulated, for instance). `THREADS`,
@@ -116,3 +181,13 @@ docker run --rm -v "$PWD/sword.tar:/sword.tar:ro" -v "$PWD:/exp" sword-ci:arm64 
   counted twice.
 - During the run on the M4, a stuck process (Sword issue #41) held ~10% of one
   of the ten cores; it is noted in `env.txt`.
+- E4 (`results/gh-*/compare*`, tables in `results/compare.md`) is newer than
+  the rest: Sword at commit `8be3586` of `develop`, after 0.3.2, on an AMD EPYC
+  7763, an arm64 Neoverse N2 (4 cores each) and a virtual Apple M2 Pro (5
+  cores), three rounds of five repetitions. Each `compare-env.txt` has every
+  compiler's version and flags.
+- In E4's `sum`, Sword gave one answer on every machine at every thread count.
+  The other parallel methods gave one per thread count, and rayon more than
+  that: with the thread count fixed at 4 or more, its work stealing cut the sum
+  differently from one round to the next. GCC's OpenMP did the same at 16
+  threads on arm64, as in E1b.

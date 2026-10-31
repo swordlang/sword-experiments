@@ -1,0 +1,242 @@
+// The five kernels of the comparison in Sword. The thread count is
+// SWORD_THREADS; the program only prints it.
+//
+//   bench <kernel> <threads> [reps]
+//
+// Prints: kernel,method,threads,check,median_ns
+
+import "std/io"
+import "std/mem"
+import "std/num"
+import "std/os"
+import "std/strings"
+import "std/time"
+
+const SumN = 10000000
+const SaxpyN = 10000000
+const GridW = 2048
+const GridSteps = 10
+const MandelW = 2000
+const MandelIter = 256
+const Bodies = 4096
+const BodySteps = 4
+
+// splitmix64 of seed + i, scaled to [0, 1): every language draws the same bits.
+func unit(seed u64, i u64) f64 {
+    mut z := seed +% i +% 0x9e3779b97f4a7c15
+    z = (z ^ (z >> 30)) *% 0xbf58476d1ce4e5b9
+    z = (z ^ (z >> 27)) *% 0x94d049bb133111eb
+    z = z ^ (z >> 31)
+    return f64(z >> 11) / 9007199254740992.0
+}
+
+func fill(seed u64, mut xs []f64) {
+    for i in 0..xs.len {
+        xs[i] = unit(seed, i)
+    }
+}
+
+// The checksum of an array is its sum in index order, outside the timing.
+func total(xs []f64) f64 {
+    mut s f64 = 0.0
+    for x in xs {
+        s += x
+    }
+    return s
+}
+
+det func sum(xs []f64) f64 {
+    mut s f64 = 0.0
+    parallel for i in 0..xs.len reduce(+: s) {
+        s += xs[i]
+    }
+    return s
+}
+
+det func saxpy(a f64, x []f64, mut y []f64) {
+    parallel for i in 0..y.len {
+        y[i] = a * x[i] + y[i]
+    }
+}
+
+// A parallel for writes b only as b[k], so the grid is walked flat and the row
+// and column come from k.
+det func step(w u64, a []f64, mut b []f64) {
+    parallel for k in 0..b.len {
+        i := k / w
+        j := k % w
+        if i == 0 || j == 0 || i == w - 1 || j == w - 1 {
+            b[k] = a[k]
+        } else {
+            b[k] = 0.25 * (a[k-1] + a[k+1] + a[k-w] + a[k+w])
+        }
+    }
+}
+
+det func mandel(w u64, maxIter u64) u64 {
+    mut count u64 = 0
+    parallel for i in 0..w reduce(+: count) {
+        cy := 2.5 * f64(i) / f64(w) - 1.25
+        for j in 0..w {
+            cx := 2.5 * f64(j) / f64(w) - 2.0
+            mut zr f64 = 0.0
+            mut zi f64 = 0.0
+            mut it u64 = 0
+            for it < maxIter && zr * zr + zi * zi <= 4.0 {
+                t := zr * zr - zi * zi + cx
+                zi = 2.0 * zr * zi + cy
+                zr = t
+                it += 1
+            }
+            count += it
+        }
+    }
+    return count
+}
+
+det func accel(m f64, px []f64, py []f64, pz []f64,
+               mut ax []f64, mut ay []f64, mut az []f64) {
+    parallel for i in 0..ax.len {
+        mut sx f64 = 0.0
+        mut sy f64 = 0.0
+        mut sz f64 = 0.0
+        for j in 0..px.len {
+            dx := px[j] - px[i]
+            dy := py[j] - py[i]
+            dz := pz[j] - pz[i]
+            d := dx * dx + dy * dy + dz * dz + 0.01
+            f := m / (d * num.Sqrt(d))
+            sx += dx * f
+            sy += dy * f
+            sz += dz * f
+        }
+        ax[i] = sx
+        ay[i] = sy
+        az[i] = sz
+    }
+}
+
+det func move(dt f64, a []f64, mut v []f64, mut p []f64) {
+    parallel for i in 0..p.len {
+        v[i] += a[i] * dt
+        p[i] += v[i] * dt
+    }
+}
+
+func median(mut ms []i64) i64 {
+    for i in 1..ms.len {
+        mut j := i
+        for j > 0 && ms[j-1] > ms[j] {
+            t := ms[j]
+            ms[j] = ms[j-1]
+            ms[j-1] = t
+            j -= 1
+        }
+    }
+    return ms[ms.len / 2]
+}
+
+func bitsOf(v f64) u64 {
+    mut x := v
+    p := [*]u64(&x)
+    return p[0]
+}
+
+func alloc(mut heap mem.Allocator, n u64) ![]f64 {
+    return mem.Alloc[f64](heap, n) orelse return error.OutOfMemory
+}
+
+func main() !int {
+    if os.Argc() < 3 {
+        try io.Println("usage: bench sum|saxpy|stencil|mandelbrot|nbody threads [reps]")
+        return 2
+    }
+    kernel := os.Arg(1)
+    threads := os.Arg(2)
+    mut reps u64 = 5
+    if os.Argc() > 3 {
+        reps = strings.ParseU64(os.Arg(3)) catch 5
+    }
+    mut heap := mem.NewSystem()
+    mut times := [64]i64{}
+    mut check u64 = 0
+    mut hex := true
+
+    if kernel == "sum" {
+        mut xs := try alloc(&heap, SumN)
+        fill(1, xs)
+        for i in 0..xs.len {
+            xs[i] = 2.0 * xs[i] - 1.0
+        }
+        mut s f64 = 0.0
+        for r in 0..reps {
+            start := time.Now()
+            s = sum(xs)
+            times[r] = time.Since(start).AsNanos()
+        }
+        check = bitsOf(s)
+    } else if kernel == "saxpy" {
+        mut x := try alloc(&heap, SaxpyN)
+        mut y := try alloc(&heap, SaxpyN)
+        fill(1, x)
+        for r in 0..reps {
+            fill(2, y)
+            start := time.Now()
+            saxpy(1.5, x, y)
+            times[r] = time.Since(start).AsNanos()
+        }
+        check = bitsOf(total(y))
+    } else if kernel == "stencil" {
+        mut a := try alloc(&heap, GridW * GridW)
+        mut b := try alloc(&heap, GridW * GridW)
+        for r in 0..reps {
+            fill(1, a)
+            start := time.Now()
+            for s in 0..GridSteps / 2 {
+                step(GridW, a, b)
+                step(GridW, b, a)
+            }
+            times[r] = time.Since(start).AsNanos()
+        }
+        check = bitsOf(total(a))
+    } else if kernel == "mandelbrot" {
+        mut n u64 = 0
+        for r in 0..reps {
+            start := time.Now()
+            n = mandel(MandelW, MandelIter)
+            times[r] = time.Since(start).AsNanos()
+        }
+        check = n
+        hex = false
+    } else if kernel == "nbody" {
+        mut p := try alloc(&heap, 3 * Bodies)
+        mut v := try alloc(&heap, 3 * Bodies)
+        mut a := try alloc(&heap, 3 * Bodies)
+        m := 1.0 / f64(Bodies)
+        for r in 0..reps {
+            fill(1, p)
+            fill(2, v)
+            for i in 0..v.len {
+                v[i] = 0.01 * (v[i] - 0.5)
+            }
+            start := time.Now()
+            for s in 0..BodySteps {
+                accel(m, p[0..Bodies], p[Bodies..2*Bodies], p[2*Bodies..3*Bodies],
+                      a[0..Bodies], a[Bodies..2*Bodies], a[2*Bodies..3*Bodies])
+                move(0.001, a, v, p)
+            }
+            times[r] = time.Since(start).AsNanos()
+        }
+        check = bitsOf(total(p))
+    } else {
+        try io.Println("unknown kernel")
+        return 2
+    }
+    ns := median(times[0..reps])
+    if hex {
+        try io.Printf("{},sword,{},{x},{}\n", kernel, threads, check, ns)
+    } else {
+        try io.Printf("{},sword,{},{},{}\n", kernel, threads, check, ns)
+    }
+    return 0
+}
