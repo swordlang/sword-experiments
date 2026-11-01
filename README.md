@@ -76,6 +76,10 @@ inside each program, so every one starts from the same bits.
 | `c-serial` | not: one thread | no |
 | `c-restrict` | not: one thread, every pointer `restrict` | no |
 | `c-omp` | `#pragma omp parallel for` | no |
+| `c-lanes` | `sum` only, one thread: sixteen accumulators in Sword's order | no |
+| `c-lanes-omp` | `sum` only: the same order, its 64 pieces shared out by OpenMP | no |
+| `c-fastmath-serial` | `c-serial` built with `-ffast-math` | no |
+| `c-fastmath-omp` | `c-omp` built with `-ffast-math` | no |
 | `cpp-thread` | `std::thread`, one block per thread | no |
 | `rust-rayon` | rayon's parallel iterators | yes |
 | `zig-safe` | `std.Thread`, one block per thread, `-O safe` | yes |
@@ -90,6 +94,14 @@ no language always gets the cold or the hot machine; the tables take the
 median across rounds and count how many different checks each method gave.
 
 What the tables do not show on their own:
+
+- A float `reduce(+)` in Sword has its order in the language's definition: 64
+  pieces, sixteen sums in each, folded by halves. `c-lanes` writes that order
+  out by hand and gives Sword's bits, at any thread count, so its time is what
+  that order costs in C; `c-fastmath` lets the compiler pick an order, which is
+  as fast and gives another answer per thread count. Under `-ffast-math` the
+  checksum itself is summed through a `volatile`, so that a different check is
+  a different answer and not a different checksum.
 
 - On arm64, C and C++ (GCC and clang alike) and Go fuse `a*b + c` into one
   instruction, rounded once, where Sword, Rust and Zig round the product and the
