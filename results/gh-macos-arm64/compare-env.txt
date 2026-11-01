@@ -1,11 +1,11 @@
 platform: gh-macos-arm64
-date: 2026-10-31T17:08:53Z
+date: 2026-11-01T03:23:57Z
 uname: Darwin 25.6.0 arm64
-cpu: Apple M1 (Virtual)
-cores: 3
+cpu: Apple M2 Pro (Virtual)
+cores: 5
 threads: 1 2 4 8 16 reps: 5 rounds: 3
-sword: shield 0.3.2 (Quench), commit 5401ffd, default flags
-c: Apple clang version 21.0.0 (clang-2100.1.1.101); -O2 -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include -L/opt/homebrew/opt/libomp/lib -lomp
+sword: shield 0.3.2 (Quench), commit ef4a242, default flags; sword-without-<piece> adds --without=<piece>
+c: Apple clang version 21.0.0 (clang-2100.1.1.101); -O2 -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include -L/opt/homebrew/opt/libomp/lib -lomp; c-fastmath adds -ffast-math
 cpp: Apple clang version 21.0.0 (clang-2100.1.1.101); -std=c++17 -O2 -pthread
 rust: rustc 1.99.1 (58cf8f9c3 2026-10-13), cargo 1.99.1 (5f94df478 2026-08-27); cargo build --release; rayon 1.12.0
 zig: 0.17.0; -O safe and -O fast

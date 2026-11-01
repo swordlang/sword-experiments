@@ -52,3 +52,18 @@ for kernel in kernels:
                 cells.append(f"{statistics.median(v) / 1e6:.1f}" if v else "")
             print(f"| {m} | " + " | ".join(cells) + f" | {len(checks[m])} |")
         print()
+
+# The answers each method gave, counted over every platform and thread count
+# together: a method with one answer per kernel gives the same bits everywhere.
+answers = defaultdict(set)
+for platform in platforms:
+    with open(platform / "compare.csv") as f:
+        for row in csv.DictReader(f):
+            answers[row["method"], row["kernel"]].add(row["check"])
+print("## Answers across every platform and thread count\n")
+print("| method | " + " | ".join(kernels) + " |")
+print("|---|" + "---:|" * len(kernels))
+for m in methods:
+    if any((m, k) in answers for k in kernels):
+        print(f"| {m} | " + " | ".join(str(len(answers[m, k])) if (m, k) in answers else ""
+                                      for k in kernels) + " |")
