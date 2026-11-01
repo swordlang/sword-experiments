@@ -81,12 +81,14 @@ inside each program, so every one starts from the same bits.
 | `c-fastmath-serial` | `c-serial` built with `-ffast-math` | no |
 | `c-fastmath-omp` | `c-omp` built with `-ffast-math` | no |
 | `c-native-*` | `c-serial`, `c-omp`, `c-lanes`, `c-lanes-omp` built for the machine's own CPU (`-march=native` on x86-64, `-mcpu=native` on arm64) | no |
+| `c-clang-serial`, `c-clang-omp` | `c-serial` and `c-omp` built with clang, the code generator Sword, Rust and Zig use; on Linux `cc` is GCC | no |
 | `cpp-thread` | `std::thread`, one block per thread | no |
 | `rust-rayon` | rayon's parallel iterators | yes |
 | `rust-slices` | `stencil` only: rayon by rows, each row's neighbours taken as slices and zipped | yes, where the compiler cannot drop them |
 | `zig-safe` | `std.Thread`, one block per thread, `-O safe` | yes |
 | `zig-fast` | the same, `-O fast` | no |
 | `go` | goroutines, one block per thread | yes |
+| `sword-rows` | `stencil` only: a `parallel for` over the pieces of `b.chunks(w)`, a turn per row, its neighbours sliced once per turn (`compare/sword/rows.sword`, needs Sword develop 9e9bf5a or later) | yes, where the compiler cannot drop them |
 | `sword-native` | Sword's IR compiled by clang for the machine's own CPU, with the flag `c-native` takes | yes, except where the compiler proves them away |
 | `sword-without-<piece>` | Sword built with `--without=<piece>`: one way its compiler drops or moves a check, or orders a sum, switched off | yes |
 
@@ -113,6 +115,7 @@ its suite that way.
 | `split` | a loop reading `xs[j - c]` or `xs[j + c]` checks only its first and last turns |
 | `deferred` | a loop that only accumulates settles its overflow once, at the end |
 | `lanes` | a float `reduce(+)` keeps sixteen sums per piece; without it, one chain, so another answer, and still the same one at any thread count |
+| `steady` | a `mut` piece of `xs.chunks(n)` its turn never reassigns or takes the address of counts as a slice that holds still |
 
 Every other build is for the base of its architecture: x86-64 with SSE2 and
 no AVX, armv8-a. The `-native` builds show what the machine's own vector unit
@@ -135,14 +138,22 @@ What the tables do not show on their own:
   sum apart. It moves the count of `mandelbrot` there: 269 789 418 for C and
   C++, 269 789 415 for Go, 269 789 451 for the rest, and C with
   `-ffp-contract=off` or Go with the products converted explicitly give
-  269 789 451 too. On x86-64 the C answer follows the compiler: the run of
+  269 789 451 too. Clang on x86-64, whose base has no fused instruction,
+  gives 269 789 451. On x86-64 GCC's answer follows its version: the run of
   2026-10-30, GCC 13 on Ubuntu 24.04, gave 269 789 451; the run of 2026-11-01,
   after GitHub moved `ubuntu-latest` to Ubuntu 26 with GCC 15, gives
   269 789 418 from the same source and the same `-O2`. Sword gave 269 789 451
   in both, on every machine.
-- Sword's `parallel for` may write an array only at the index it is on, so its
-  stencil walks the grid as one range and finds the row and column by dividing.
-  The other languages loop over rows.
+- Sword's `stencil` in `bench.sword` walks the grid as one range and finds the
+  row and column by dividing, the only shape its `parallel for` allowed before
+  develop 9e9bf5a. `sword-rows` is the same sums by rows. In the run of
+  2026-11-01 (Sword 9e9bf5a), at one thread, the flat one took 76.2 / 90.3 /
+  55.8 ms on Linux arm64, x86-64 and macOS, and `sword-rows` 20.7 / 32.6 /
+  33.9, against 53.9 / 37.0 / 44.4 for `c-serial` and 20.7 / 32.2 / 30.8 for
+  `rust-slices`, with the same bits.
+- On x86-64 `nbody` in C takes 73.7 ms through GCC and 310.0 through clang
+  (one thread, the same run); Sword takes 304.3, Rust 309.6, Zig 305.7. The gap
+  to GCC is the code generator, not the language.
 - `nbody` calls `num.Sqrt` 67 million times. Up to Sword's develop 8be3586 it
   was computed in software (fdlibm's bit-by-bit root), and Sword's `nbody` took
   18 257 / 13 191 / 14 165 ms at one thread on x86-64, N2 and the M2 Pro (commit
@@ -227,10 +238,11 @@ docker run --rm -v "$PWD/sword.tar:/sword.tar:ro" -v "$PWD:/exp" sword-ci:arm64 
 - During the run on the M4, a stuck process (Sword issue #41) held ~10% of one
   of the ten cores; it is noted in `env.txt`.
 - E4 (`results/gh-*/compare*`, tables in `results/compare.md`) is newer than
-  the rest: Sword at commit `ef4a242` of `develop`, after 0.3.2, on an AMD EPYC
-  9V74, an arm64 Neoverse N2 (4 cores each) and a virtual Apple M2 Pro (5
-  cores), three rounds of five repetitions. Earlier runs are in this
-  repository's history: `5401ffd` in de0da86, `8be3586` in 7463b61. Each
+  the rest: Sword at commit `9e9bf5a` of `develop`, after 0.3.2, on an AMD EPYC
+  7763, an arm64 Neoverse N2 (4 cores each) and a virtual Apple M1 (3 cores),
+  three rounds of five repetitions (run 41321735944). Earlier runs are in this
+  repository's history: `ef4a242` in 6e72831, `5401ffd` in de0da86, `8be3586`
+  in 7463b61. Each
   `compare-env.txt` has every compiler's version and flags.
 - In E4, Sword gave one answer per kernel on every machine at every thread
   count, and so did every `sword-without-` build; the last table of
