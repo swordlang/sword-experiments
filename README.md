@@ -85,6 +85,7 @@ inside each program, so every one starts from the same bits.
 | `zig-safe` | `std.Thread`, one block per thread, `-O safe` | yes |
 | `zig-fast` | the same, `-O fast` | no |
 | `go` | goroutines, one block per thread | yes |
+| `sword-without-<piece>` | Sword built with `--without=<piece>`: one way its compiler drops or moves a check, or orders a sum, switched off | yes |
 
 Each program prints the median time over its repetitions and a check: the bits
 of the answer (the sum, for the kernels that produce an array, taken in index
@@ -92,6 +93,23 @@ order outside the timing), or for `mandelbrot` the count. `compare/run.sh` runs
 every method at every thread count once per round, all of them in turn, so that
 no language always gets the cold or the hot machine; the tables take the
 median across rounds and count how many different checks each method gave.
+
+The `sword-without-` rows are the ablation. `shield` takes two switches that
+are not in its usage, because they measure the compiler rather than build a
+program: `--without=` names one or more of the pieces below, separated by
+commas, and `--audit` keeps every bounds check the compiler dropped as one that
+panics with a message of its own. `tests/audit.sh` in the Sword repository runs
+its suite that way.
+
+| piece | what is switched off |
+|---|---|
+| `walked` | `xs[i]` in `for i in a..xs.len`, `xs` immutable, needs no check |
+| `walked-mut` | the same in a `parallel for` with `xs` `mut`, which the race checker allows |
+| `captures` | what a `parallel for` only reads is copied into each piece once |
+| `versioned` | indexing that no turn can move is tested once, before the loop |
+| `split` | a loop reading `xs[j - c]` or `xs[j + c]` checks only its first and last turns |
+| `deferred` | a loop that only accumulates settles its overflow once, at the end |
+| `lanes` | a float `reduce(+)` keeps sixteen sums per piece; without it, one chain, so another answer, and still the same one at any thread count |
 
 What the tables do not show on their own:
 

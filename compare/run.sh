@@ -16,6 +16,9 @@ THREADS=${THREADS:-"1 2 4 8 16"}
 REPS=${REPS:-5}
 ROUNDS=${ROUNDS:-3}
 NOTE=${NOTE:-}
+# Sword again with one piece of its compiler switched off at a time, for the
+# ablation; a Sword older than the --without= switch builds none of them.
+ABLATE=${ABLATE-"walked walked-mut captures versioned split deferred lanes"}
 if [ -z "${OMPFLAGS:-}" ] && [ "$(uname)" = Darwin ]; then
     omp=$(brew --prefix libomp 2>/dev/null || echo /opt/homebrew/opt/libomp)
     OMPFLAGS="-Xpreprocessor -fopenmp -I$omp/include -L$omp/lib -lomp"
@@ -41,7 +44,7 @@ has() { case " $LANGS " in *" $1 "*) return 0 ;; esac; return 1; }
     fi
     echo "cores: $(getconf _NPROCESSORS_ONLN)"
     echo "threads: $THREADS reps: $REPS rounds: $ROUNDS"
-    has sword && echo "sword: $($SHIELD --version), commit ${SWORD_REV:-$(git -C "$(dirname "$SHIELD")" rev-parse --short HEAD 2>/dev/null || echo unknown)}, default flags"
+    has sword && echo "sword: $($SHIELD --version), commit ${SWORD_REV:-$(git -C "$(dirname "$SHIELD")" rev-parse --short HEAD 2>/dev/null || echo unknown)}, default flags; sword-without-<piece> adds --without=<piece>"
     has c && echo "c: $($CC --version | head -1); $CFLAGS $OMPFLAGS; c-fastmath adds -ffast-math"
     has cpp && echo "cpp: $($CXX --version | head -1); $CXXFLAGS"
     has rust && echo "rust: $(rustc --version), $(cargo --version); cargo build --release; rayon $(sed -n 's/^rayon = "=\(.*\)"/\1/p' "$here/rust/Cargo.toml")"
@@ -57,6 +60,11 @@ progs=$build/progs
 if has sword; then
     $SHIELD "$here/sword/bench.sword" -o "$build/sword"
     echo "sword|$build/sword|" >> "$progs"
+    for piece in $ABLATE; do
+        if $SHIELD --without=$piece "$here/sword/bench.sword" -o "$build/sword-without-$piece" 2>/dev/null; then
+            echo "sword-without-$piece|$build/sword-without-$piece|" >> "$progs"
+        fi
+    done
 fi
 if has c; then
     $CC $CFLAGS $OMPFLAGS -o "$build/c" "$here/c/bench.c" -lm
@@ -106,6 +114,10 @@ for round in $(seq 1 "$ROUNDS"); do
                     line=$("$bin" "$k" "$method" "$t" "$REPS" < /dev/null)
                 else
                     line=$(SWORD_THREADS=$t "$bin" "$k" "$t" "$REPS" < /dev/null)
+                    # The program calls itself sword whatever it was built with.
+                    case $name in
+                        sword-without-*) line=$(printf '%s\n' "$line" | sed "s/^\([^,]*\),sword,/\1,$name,/") ;;
+                    esac
                 fi
                 echo "$round,$line" >> "$out/compare.csv"
             done
