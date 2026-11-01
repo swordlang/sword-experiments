@@ -146,13 +146,14 @@ What the tables do not show on their own:
   in both, on every machine.
 - Sword's `stencil` in `bench.sword` walks the grid as one range and finds the
   row and column by dividing, the only shape its `parallel for` allowed before
-  develop 9e9bf5a. `sword-rows` is the same sums by rows. In the run of
-  2026-11-01 (Sword 9e9bf5a), at one thread, the flat one took 76.2 / 90.3 /
-  55.8 ms on Linux arm64, x86-64 and macOS, and `sword-rows` 20.7 / 32.6 /
-  33.9, against 53.9 / 37.0 / 44.4 for `c-serial` and 20.7 / 32.2 / 30.8 for
-  `rust-slices`, with the same bits.
+  develop 9e9bf5a. `sword-rows` is the same sums by rows. Against Sword 0.4.0,
+  at one thread, the flat one took 78.0 / 91.8 / 42.3 ms on Linux arm64,
+  x86-64 and macOS, and `sword-rows` 21.3 / 31.9 / 35.8, against 54.0 / 37.9 /
+  52.6 for `c-serial` and 21.2 / 27.5 / 34.5 for `rust-slices`, with the same
+  bits. The macOS machine is a shared virtual M1: the flat stencil took 55.8
+  there in the run before, with Sword 9e9bf5a.
 - On x86-64 `nbody` in C takes 73.7 ms through GCC and 310.0 through clang
-  (one thread, the same run); Sword takes 304.3, Rust 309.6, Zig 305.7. The gap
+  (one thread, the same run); Sword takes 304.2. The gap
   to GCC is the code generator, not the language.
 - `nbody` calls `num.Sqrt` 67 million times. Up to Sword's develop 8be3586 it
   was computed in software (fdlibm's bit-by-bit root), and Sword's `nbody` took
@@ -238,11 +239,11 @@ docker run --rm -v "$PWD/sword.tar:/sword.tar:ro" -v "$PWD:/exp" sword-ci:arm64 
 - During the run on the M4, a stuck process (Sword issue #41) held ~10% of one
   of the ten cores; it is noted in `env.txt`.
 - E4 (`results/gh-*/compare*`, tables in `results/compare.md`) is newer than
-  the rest: Sword at commit `9e9bf5a` of `develop`, after 0.3.2, on an AMD EPYC
-  7763, an arm64 Neoverse N2 (4 cores each) and a virtual Apple M1 (3 cores),
-  three rounds of five repetitions (run 41321735944). Earlier runs are in this
-  repository's history: `ef4a242` in 6e72831, `5401ffd` in de0da86, `8be3586`
-  in 7463b61. Each
+  the rest: Sword 0.4.0 (tag `v0.4.0`, commit `dbf77e0`), on an AMD EPYC 7763,
+  an arm64 Neoverse N2 (4 cores each) and a virtual Apple M1 (3 cores), three
+  rounds of five repetitions (run 41348163860). Earlier runs are in this
+  repository's history: `9e9bf5a` in a3d010c, `ef4a242` in 6e72831, `5401ffd`
+  in de0da86, `8be3586` in 7463b61. Each
   `compare-env.txt` has every compiler's version and flags.
 - In E4, Sword gave one answer per kernel on every machine at every thread
   count, and so did every `sword-without-` build; the last table of

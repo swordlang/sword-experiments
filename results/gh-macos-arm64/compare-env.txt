@@ -1,10 +1,10 @@
 platform: gh-macos-arm64
-date: 2026-11-01T15:34:08Z
+date: 2026-11-01T20:43:15Z
 uname: Darwin 25.6.0 arm64
 cpu: Apple M1 (Virtual)
 cores: 3
 threads: 1 2 4 8 16 reps: 5 rounds: 3
-sword: shield 0.3.2 (Quench), commit 9e9bf5a, default flags; sword-without-<piece> adds --without=<piece>
+sword: shield 0.4.0 (Temper), commit dbf77e0, default flags; sword-without-<piece> adds --without=<piece>
 c: Apple clang version 21.0.0 (clang-2100.1.1.101); -O2 -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include -L/opt/homebrew/opt/libomp/lib -lomp; c-fastmath adds -ffast-math, c-native -mcpu=native; c-clang is Apple clang version 21.0.0 (clang-2100.1.1.101)
 sword-native: shield --emit-llvm, then Apple clang version 21.0.0 (clang-2100.1.1.101) -O2 -mcpu=native
 cpp: Apple clang version 21.0.0 (clang-2100.1.1.101); -std=c++17 -O2 -pthread
