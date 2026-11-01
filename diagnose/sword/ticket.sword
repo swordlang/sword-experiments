@@ -1,0 +1,28 @@
+// Tickets from an atomic counter: each task records the ticket it drew, and
+// which task drew which is the order they reached the counter.
+
+import "std/io"
+
+func draw(counter *atomic[u64], mut part []u64) {
+    part[0] = counter.Add(1)
+}
+
+det func tickets(mut out []u64) u64 {
+    mut counter := atomic[u64](0)
+    scope {
+        for part in out.chunks(1) {
+            spawn draw(&counter, part)
+        }
+    }
+    mut h u64 = 0
+    for t in out {
+        h = h *% 31 +% t
+    }
+    return h
+}
+
+func main() !int {
+    mut out := [16]u64{}
+    try io.Printf("{}\n", tickets(out[..]))
+    return 0
+}

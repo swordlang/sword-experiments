@@ -146,6 +146,26 @@ C does not say whether `qsort` is stable, and C libraries differ, so even
 `c-serial` may give another order on another system. The ablation does not run on these
 kernels.
 
+**The diagnostics table** (`diagnose/`). Six ordinary ways for a program's
+answer to depend on more than its input, each written in Sword, C and Rust:
+
+| program | what reaches the answer |
+|---|---|
+| `pool` | four workers taking values from one channel (a mutex-guarded queue in C, `Arc<Mutex<Receiver>>` in Rust) |
+| `senders` | two producers on one channel, the consumer folding in arrival order |
+| `poll` | a consumer that asks whether a value is there yet (`TryRecv`, `try_recv`) and counts the misses |
+| `ticket` | sixteen tasks drawing tickets from an atomic counter |
+| `clock` | refining until a time budget runs out |
+| `ccall` | a seed from the process id (`getpid` from C in Sword and C, `std::process::id` in Rust) |
+
+The Sword programs say `det` on the function that matters, and the compiler
+refuses each one, with the line and the chain to the cause; the messages are
+kept in `diagnose-messages.txt`. With `det` taken off, the same programs
+compile and run. The C programs are built with `-Wall -Wextra -pedantic` and
+the Rust ones with `-D warnings`. `diagnose/run.sh` runs each twenty times
+and counts the answers (`diagnose.csv`): in every language, the program
+compiles and its answer moves; Sword is the one that says so when asked.
+
 Every other build is for the base of its architecture: x86-64 with SSE2 and
 no AVX, armv8-a. The `-native` builds show what the machine's own vector unit
 changes. Sword has no switch for it, so `compare/run.sh` takes its IR from
