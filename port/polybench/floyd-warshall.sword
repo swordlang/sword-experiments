@@ -1,0 +1,52 @@
+// PolyBench/C 4.2.1 floyd-warshall, SMALL_DATASET: shortest paths between
+// every pair of nodes.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The k loop carries path. For one k the i loop is the one
+// every parallel Floyd-Warshall runs in parallel: iteration i writes row i and
+// reads row k, which step k leaves as it is, since path[k][k] is never below
+// zero here. Sword refuses a loop over the rows of path that reads another
+// row, so row k is copied out before each step, and the rows are the pieces
+// of path.chunks(N).
+
+import "std/mem"
+import "pb"
+
+const N = 180
+
+func kernel(mut path []i64, mut rowk []i64) {
+    for k in 0..N {
+        for j in 0..N {
+            rowk[j] = path[k * N + j]
+        }
+        step(k, path, rowk)
+    }
+}
+
+func step(k i64, mut path []i64, rowk []i64) {
+    parallel for off, row in path.chunks(N) {
+        for j in 0..N {
+            through := row[k] + rowk[j]
+            if row[j] >= through {
+                row[j] = through
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut path := mem.Alloc[i64](&heap, N * N) orelse return error.OutOfMemory
+    mut rowk := mem.Alloc[i64](&heap, N) orelse return error.OutOfMemory
+    for i in 0..N {
+        for j in 0..N {
+            path[i * N + j] = i * j % 7 + 1
+            if (i + j) % 13 == 0 || (i + j) % 7 == 0 || (i + j) % 11 == 0 {
+                path[i * N + j] = 999
+            }
+        }
+    }
+    kernel(path, rowk)
+    try pb.DumpInts("path", path)
+    return 0
+}

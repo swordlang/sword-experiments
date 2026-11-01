@@ -1,0 +1,80 @@
+// PolyBench/C 4.2.1 gramschmidt, SMALL_DATASET: A = Q R by modified
+// Gram-Schmidt.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The k loop carries A. Within it the norm is a sum; the i
+// loop filling column k of Q is parallel, and so is the j loop, each j writing
+// R[k][j] and column j of A. Sword cuts a slice into rows, never columns:
+// column k of Q is filled through the rows of Q.chunks(N), and the j loop is
+// split in two, a loop over j filling row k of R and a loop over the rows of
+// A.chunks(N) that subtracts. Each element sees the same operations in the
+// same order.
+
+import "std/mem"
+import "std/num"
+import "pb"
+
+const M = 60
+const N = 80
+
+func kernel(mut a []f64, mut r []f64, mut q []f64) {
+    for k in 0..N {
+        mut nrm := 0.0
+        for i in 0..M {
+            nrm += a[i * N + k] * a[i * N + k]
+        }
+        r[k * N + k] = num.Sqrt(nrm)
+        rkk := r[k * N + k]
+        column(k, rkk, a, q)
+        mut rk := r[u64(k * N)..u64((k + 1) * N)]
+        project(k, a, q, rk)
+        subtract(k, a, q, rk)
+    }
+}
+
+func column(k i64, rkk f64, a []f64, mut q []f64) {
+    parallel for off, row in q.chunks(N) {
+        i := i64(off) / N
+        row[k] = a[i * N + k] / rkk
+    }
+}
+
+func project(k i64, a []f64, q []f64, mut rk []f64) {
+    parallel for j in u64(k + 1)..rk.len {
+        rk[j] = 0.0
+        for i in 0..M {
+            rk[j] += q[i * N + k] * a[i * N + i64(j)]
+        }
+    }
+}
+
+func subtract(k i64, mut a []f64, q []f64, rk []f64) {
+    parallel for off, row in a.chunks(N) {
+        i := i64(off) / N
+        for j in k + 1..N {
+            row[j] = row[j] - q[i * N + k] * rk[j]
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, M * N) orelse return error.OutOfMemory
+    mut r := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut q := mem.Alloc[f64](&heap, M * N) orelse return error.OutOfMemory
+    for i in 0..M {
+        for j in 0..N {
+            a[i * N + j] = ((f64(i * j % M) / f64(M)) * 100.0) + 10.0
+            q[i * N + j] = 0.0
+        }
+    }
+    for i in 0..N {
+        for j in 0..N {
+            r[i * N + j] = 0.0
+        }
+    }
+    kernel(a, r, q)
+    try pb.Dump("R", r)
+    try pb.Dump("Q", q)
+    return 0
+}

@@ -1,0 +1,67 @@
+// PolyBench/C 4.2.1 2mm, SMALL_DATASET: D := alpha*A*B*C + beta*D.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. Each i of both nests writes one row of tmp or D. A parallel
+// for over i may write only x[i], so in Sword the rows are the pieces of
+// tmp.chunks(NJ) and D.chunks(NL).
+
+import "std/mem"
+import "pb"
+
+const NI = 40
+const NJ = 50
+const NK = 70
+const NL = 80
+
+func kernel(alpha f64, beta f64, mut tmp []f64, a []f64, b []f64, c []f64, mut d []f64) {
+    parallel for off, row in tmp.chunks(NJ) {
+        i := i64(off) / NJ
+        for j in 0..NJ {
+            row[j] = 0.0
+            for k in 0..NK {
+                row[j] += alpha * a[i * NK + k] * b[k * NJ + j]
+            }
+        }
+    }
+    parallel for off, row in d.chunks(NL) {
+        i := i64(off) / NL
+        for j in 0..NL {
+            row[j] *= beta
+            for k in 0..NJ {
+                row[j] += tmp[i * NJ + k] * c[k * NL + j]
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut tmp := mem.Alloc[f64](&heap, NI * NJ) orelse return error.OutOfMemory
+    mut a := mem.Alloc[f64](&heap, NI * NK) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, NK * NJ) orelse return error.OutOfMemory
+    mut c := mem.Alloc[f64](&heap, NJ * NL) orelse return error.OutOfMemory
+    mut d := mem.Alloc[f64](&heap, NI * NL) orelse return error.OutOfMemory
+    for i in 0..NI {
+        for j in 0..NK {
+            a[i * NK + j] = f64((i * j + 1) % NI) / f64(NI)
+        }
+    }
+    for i in 0..NK {
+        for j in 0..NJ {
+            b[i * NJ + j] = f64(i * (j + 1) % NJ) / f64(NJ)
+        }
+    }
+    for i in 0..NJ {
+        for j in 0..NL {
+            c[i * NL + j] = f64((i * (j + 3) + 1) % NL) / f64(NL)
+        }
+    }
+    for i in 0..NI {
+        for j in 0..NL {
+            d[i * NL + j] = f64(i * (j + 2) % NK) / f64(NK)
+        }
+    }
+    kernel(1.5, 1.2, tmp, a, b, c, d)
+    try pb.Dump("D", d)
+    return 0
+}

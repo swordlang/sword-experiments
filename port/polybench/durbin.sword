@@ -1,0 +1,45 @@
+// PolyBench/C 4.2.1 durbin, SMALL_DATASET: the Toeplitz system r y = -r
+// solved by Levinson-Durbin.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: as is. The k loop carries y and the first i loop is a sum; the loop
+// filling z and the one copying it back into y write only z[i] and y[i].
+
+import "std/mem"
+import "pb"
+
+const N = 120
+
+func kernel(r []f64, mut y []f64, mut z []f64) {
+    y[0] = -r[0]
+    mut beta := 1.0
+    mut alpha := -r[0]
+    for k in 1..N {
+        beta = (1.0 - alpha * alpha) * beta
+        mut sum := 0.0
+        for i in 0..k {
+            sum += r[k - i - 1] * y[i]
+        }
+        alpha = -(r[k] + sum) / beta
+        parallel for i in 0..u64(k) {
+            z[i] = y[i] + alpha * y[u64(k) - i - 1]
+        }
+        parallel for i in 0..u64(k) {
+            y[i] = z[i]
+        }
+        y[k] = alpha
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut r := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut y := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut z := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    for i in 0..N {
+        r[i] = f64(N + 1 - i)
+    }
+    kernel(r, y, z)
+    try pb.Dump("y", y)
+    return 0
+}

@@ -1,0 +1,64 @@
+// PolyBench/C 4.2.1 gemver, SMALL_DATASET: A := A + u1 v1^T + u2 v2^T,
+// x := beta A^T y + z, w := alpha A x.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The first nest writes row i of A, a piece of A.chunks(N);
+// the other three write only x[i] or w[i] and stay as they are.
+
+import "std/mem"
+import "pb"
+
+const N = 120
+
+func kernel(alpha f64, beta f64, mut a []f64, u1 []f64, v1 []f64, u2 []f64, v2 []f64,
+        mut w []f64, mut x []f64, y []f64, z []f64) {
+    parallel for off, row in a.chunks(N) {
+        i := i64(off) / N
+        for j in 0..N {
+            row[j] = row[j] + u1[i] * v1[j] + u2[i] * v2[j]
+        }
+    }
+    parallel for i in 0..x.len {
+        for j in 0..N {
+            x[i] = x[i] + beta * a[j * N + i64(i)] * y[j]
+        }
+    }
+    parallel for i in 0..x.len {
+        x[i] = x[i] + z[i]
+    }
+    parallel for i in 0..w.len {
+        for j in 0..N {
+            w[i] = w[i] + alpha * a[i64(i) * N + j] * x[j]
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut u1 := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut v1 := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut u2 := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut v2 := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut w := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut x := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut y := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut z := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    fn := f64(N)
+    for i in 0..N {
+        u1[i] = f64(i)
+        u2[i] = (f64(i + 1) / fn) / 2.0
+        v1[i] = (f64(i + 1) / fn) / 4.0
+        v2[i] = (f64(i + 1) / fn) / 6.0
+        y[i] = (f64(i + 1) / fn) / 8.0
+        z[i] = (f64(i + 1) / fn) / 9.0
+        x[i] = 0.0
+        w[i] = 0.0
+        for j in 0..N {
+            a[i * N + j] = f64(i * j % N) / f64(N)
+        }
+    }
+    kernel(1.5, 1.2, a, u1, v1, u2, v2, w, x, y, z)
+    try pb.Dump("w", w)
+    return 0
+}

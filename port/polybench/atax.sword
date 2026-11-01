@@ -1,0 +1,48 @@
+// PolyBench/C 4.2.1 atax, SMALL_DATASET: y := A^T (A x).
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: as is. The i loop carries y, and the j loop filling tmp[i] carries a
+// sum; the parallel loops are the one clearing y and the inner j loop adding
+// into y[j], and both stay as they are.
+
+import "std/mem"
+import "pb"
+
+const M = 116
+const N = 124
+
+func kernel(a []f64, x []f64, mut y []f64, mut tmp []f64) {
+    parallel for i in 0..y.len {
+        y[i] = 0.0
+    }
+    for i in 0..M {
+        tmp[i] = 0.0
+        for j in 0..N {
+            tmp[i] = tmp[i] + a[i * N + j] * x[j]
+        }
+        t := tmp[i]
+        parallel for j in 0..y.len {
+            y[j] = y[j] + a[i * N + i64(j)] * t
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, M * N) orelse return error.OutOfMemory
+    mut x := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut y := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut tmp := mem.Alloc[f64](&heap, M) orelse return error.OutOfMemory
+    fn := f64(N)
+    for i in 0..N {
+        x[i] = 1.0 + f64(i) / fn
+    }
+    for i in 0..M {
+        for j in 0..N {
+            a[i * N + j] = f64((i + j) % N) / f64(5 * M)
+        }
+    }
+    kernel(a, x, y, tmp)
+    try pb.Dump("y", y)
+    return 0
+}
