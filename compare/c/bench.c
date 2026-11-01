@@ -3,8 +3,13 @@
 //   serial    plain loops, one thread
 //   restrict  the same loops with every pointer restrict-qualified
 //   omp       #pragma omp parallel for, the way it is usually written
+//   lanes     sum only: sixteen accumulators in Sword's order, one thread
+//   lanes-omp sum only: the same order, its pieces shared out by OpenMP
 //
-//   bench <kernel> serial|restrict|omp <threads> [reps]
+// Built with -DFLAVOR='"c-fastmath"' -ffast-math, the same program is the
+// fast-math baseline under that name.
+//
+//   bench <kernel> serial|restrict|omp|lanes|lanes-omp <threads> [reps]
 //
 // Prints: kernel,method,threads,check,median_ns
 #include <math.h>
@@ -14,6 +19,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#ifndef FLAVOR
+#define FLAVOR "c"
+#endif
 
 enum {
   SumN = 10000000,
@@ -40,8 +49,14 @@ static void fill(uint64_t seed, double *xs, long n) {
 }
 
 // The checksum of an array is its sum in index order, outside the timing.
+// Under -ffast-math the volatile keeps it in that order, so that a different
+// check means a different answer and not a different checksum.
 static double total(const double *xs, long n) {
+#ifdef __FAST_MATH__
+  volatile double s = 0.0;
+#else
   double s = 0.0;
+#endif
   for (long i = 0; i < n; i++) s += xs[i];
   return s;
 }
@@ -56,6 +71,39 @@ static double sum_omp(const double *xs, long n) {
   double s = 0.0;
 #pragma omp parallel for reduction(+ : s) schedule(static)
   for (long i = 0; i < n; i++) s += xs[i];
+  return s;
+}
+
+// A float reduce(+) in Sword: the range cut into 64 pieces of ceil(n/64),
+// sixteen sums in each, the k-th element of a piece into sum k % 16, the sums
+// folded by halves, and the pieces added in the order they were cut
+// (docs/reference.md in the Sword repository). Written out so that it gives
+// Sword's bits, which is what makes the comparison of speed a fair one.
+enum { Pieces = 64, Lanes = 16 };
+
+static double piece_lanes(const double *xs, long n) {
+  double l[Lanes] = {0};
+  long k = 0;
+  for (; k + Lanes <= n; k += Lanes)
+    for (int j = 0; j < Lanes; j++) l[j] += xs[k + j];
+  for (int j = 0; k + j < n; j++) l[j] += xs[k + j];
+  for (int h = Lanes / 2; h > 0; h /= 2)
+    for (int j = 0; j < h; j++) l[j] += l[j + h];
+  return l[0];
+}
+
+static double sum_lanes(const double *xs, long n, int omp) {
+  long chunk = (n + Pieces - 1) / Pieces;
+  if (chunk < 1) chunk = 1;
+  long count = (n + chunk - 1) / chunk;
+  double part[Pieces];
+#pragma omp parallel for schedule(static) if (omp)
+  for (long p = 0; p < count; p++) {
+    long lo = p * chunk, hi = lo + chunk < n ? lo + chunk : n;
+    part[p] = piece_lanes(xs + lo, hi - lo);
+  }
+  double s = 0.0;
+  for (long p = 0; p < count; p++) s += part[p];
   return s;
 }
 
@@ -242,7 +290,16 @@ int main(int argc, char **argv) {
   const char *kernel = argv[1], *method = argv[2];
   int threads = atoi(argv[3]);
   int reps = argc > 4 ? atoi(argv[4]) : 5;
-  int m = !strcmp(method, "serial") ? 0 : !strcmp(method, "restrict") ? 1 : 2;
+  int m = !strcmp(method, "serial")      ? 0
+          : !strcmp(method, "restrict")  ? 1
+          : !strcmp(method, "omp")       ? 2
+          : !strcmp(method, "lanes")     ? 3
+          : !strcmp(method, "lanes-omp") ? 4
+                                         : -1;
+  if (m < 0 || (m > 2 && strcmp(kernel, "sum"))) {
+    fprintf(stderr, "unknown method for %s: %s\n", kernel, method);
+    return 2;
+  }
   omp_set_num_threads(threads);
   double *times = malloc(reps * sizeof *times);
   uint64_t check = 0;
@@ -254,7 +311,7 @@ int main(int argc, char **argv) {
     for (long i = 0; i < SumN; i++) xs[i] = 2.0 * xs[i] - 1.0;
     for (int r = 0; r < reps; r++) {
       double t0 = now_ns();
-      s = m == 2 ? sum_omp(xs, SumN) : sum_serial(xs, SumN);
+      s = m == 2 ? sum_omp(xs, SumN) : m > 2 ? sum_lanes(xs, SumN, m == 4) : sum_serial(xs, SumN);
       times[r] = now_ns() - t0;
     }
     check = bits(s);
@@ -322,7 +379,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   qsort(times, reps, sizeof *times, cmp);
-  printf(hex ? "%s,c-%s,%d,%llx,%.0f\n" : "%s,c-%s,%d,%llu,%.0f\n", kernel, method, threads,
+  printf(hex ? "%s," FLAVOR "-%s,%d,%llx,%.0f\n" : "%s," FLAVOR "-%s,%d,%llu,%.0f\n", kernel, method, threads,
          (unsigned long long)check, times[reps / 2]);
   return 0;
 }

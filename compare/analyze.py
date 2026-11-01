@@ -14,7 +14,8 @@ from pathlib import Path
 
 root = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).parent.parent / "results")
 kernels = ["sum", "saxpy", "stencil", "mandelbrot", "nbody"]
-methods = ["sword", "c-serial", "c-restrict", "c-omp", "cpp-thread", "rust-rayon",
+methods = ["sword", "c-serial", "c-restrict", "c-omp", "c-lanes", "c-lanes-omp",
+           "c-fastmath-serial", "c-fastmath-omp", "cpp-thread", "rust-rayon",
            "zig-safe", "zig-fast", "go"]
 
 platforms = sorted(p for p in root.iterdir() if (p / "compare.csv").exists())

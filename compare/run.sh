@@ -42,7 +42,7 @@ has() { case " $LANGS " in *" $1 "*) return 0 ;; esac; return 1; }
     echo "cores: $(getconf _NPROCESSORS_ONLN)"
     echo "threads: $THREADS reps: $REPS rounds: $ROUNDS"
     has sword && echo "sword: $($SHIELD --version), commit ${SWORD_REV:-$(git -C "$(dirname "$SHIELD")" rev-parse --short HEAD 2>/dev/null || echo unknown)}, default flags"
-    has c && echo "c: $($CC --version | head -1); $CFLAGS $OMPFLAGS"
+    has c && echo "c: $($CC --version | head -1); $CFLAGS $OMPFLAGS; c-fastmath adds -ffast-math"
     has cpp && echo "cpp: $($CXX --version | head -1); $CXXFLAGS"
     has rust && echo "rust: $(rustc --version), $(cargo --version); cargo build --release; rayon $(sed -n 's/^rayon = "=\(.*\)"/\1/p' "$here/rust/Cargo.toml")"
     has zig && echo "zig: $(zig version); -O safe and -O fast"
@@ -60,7 +60,10 @@ if has sword; then
 fi
 if has c; then
     $CC $CFLAGS $OMPFLAGS -o "$build/c" "$here/c/bench.c" -lm
-    printf '%s\n' "c-serial|$build/c|serial" "c-restrict|$build/c|restrict" "c-omp|$build/c|omp" >> "$progs"
+    $CC $CFLAGS -ffast-math -DFLAVOR='"c-fastmath"' $OMPFLAGS -o "$build/c-fastmath" "$here/c/bench.c" -lm
+    printf '%s\n' "c-serial|$build/c|serial" "c-restrict|$build/c|restrict" "c-omp|$build/c|omp" \
+        "c-lanes|$build/c|lanes" "c-lanes-omp|$build/c|lanes-omp" \
+        "c-fastmath-serial|$build/c-fastmath|serial" "c-fastmath-omp|$build/c-fastmath|omp" >> "$progs"
 fi
 if has cpp; then
     $CXX $CXXFLAGS -o "$build/cpp" "$here/cpp/bench.cpp"
@@ -89,8 +92,13 @@ echo "round,kernel,method,threads,check,median_ns" > "$out/compare.csv"
 for round in $(seq 1 "$ROUNDS"); do
     for k in $KERNELS; do
         while IFS='|' read -r name bin method; do
+            # The lanes variants exist only for sum.
+            case $name:$k in
+                c-lanes*:sum) ;;
+                c-lanes*:*) continue ;;
+            esac
             case $name in
-                c-serial|c-restrict) ts=1 ;;
+                c-serial|c-restrict|c-lanes|c-fastmath-serial) ts=1 ;;
                 *) ts=$THREADS ;;
             esac
             for t in $ts; do
