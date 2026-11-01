@@ -1,0 +1,109 @@
+// The stencil of bench.sword written by rows: a parallel for over the pieces
+// of b.chunks(w), each turn writing its own row. The same sums in the same
+// order as step there, so the same bits. Apart from bench.sword because it
+// needs a Sword with that loop, and a ref older than it should still build
+// the five kernels.
+//
+//   rows stencil <threads> [reps]
+//
+// Prints: stencil,sword-rows,threads,check,median_ns
+
+import "std/io"
+import "std/mem"
+import "std/os"
+import "std/strings"
+import "std/time"
+
+const GridW = 2048
+const GridSteps = 10
+
+func unit(seed u64, i u64) f64 {
+    mut z := seed +% i +% 0x9e3779b97f4a7c15
+    z = (z ^ (z >> 30)) *% 0xbf58476d1ce4e5b9
+    z = (z ^ (z >> 27)) *% 0x94d049bb133111eb
+    z = z ^ (z >> 31)
+    return f64(z >> 11) / 9007199254740992.0
+}
+
+func fill(seed u64, mut xs []f64) {
+    for i in 0..xs.len {
+        xs[i] = unit(seed, i)
+    }
+}
+
+func total(xs []f64) f64 {
+    mut s f64 = 0.0
+    for x in xs {
+        s += x
+    }
+    return s
+}
+
+func copyRow(mut row []f64, from []f64) {
+    for j in 0..row.len {
+        row[j] = from[j]
+    }
+}
+
+det func step(w u64, a []f64, mut b []f64) {
+    parallel for off, row in b.chunks(w) {
+        mid := a[off..off + w]
+        if off == 0 || off + w == a.len {
+            copyRow(row, mid)
+            continue
+        }
+        up := a[off - w..off]
+        down := a[off + w..off + 2 * w]
+        row[0] = mid[0]
+        row[w - 1] = mid[w - 1]
+        for j in 1..w - 1 {
+            row[j] = 0.25 * (mid[j - 1] + mid[j + 1] + up[j] + down[j])
+        }
+    }
+}
+
+func median(mut ms []i64) i64 {
+    for i in 1..ms.len {
+        mut j := i
+        for j > 0 && ms[j-1] > ms[j] {
+            t := ms[j]
+            ms[j] = ms[j-1]
+            ms[j-1] = t
+            j -= 1
+        }
+    }
+    return ms[ms.len / 2]
+}
+
+func bitsOf(v f64) u64 {
+    mut x := v
+    p := [*]u64(&x)
+    return p[0]
+}
+
+func main() !int {
+    if os.Argc() < 3 || os.Arg(1) != "stencil" {
+        try io.Println("usage: rows stencil threads [reps]")
+        return 2
+    }
+    threads := os.Arg(2)
+    mut reps u64 = 5
+    if os.Argc() > 3 {
+        reps = strings.ParseU64(os.Arg(3)) catch 5
+    }
+    mut heap := mem.NewSystem()
+    mut times := [64]i64{}
+    mut a := mem.Alloc[f64](&heap, GridW * GridW) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, GridW * GridW) orelse return error.OutOfMemory
+    for r in 0..reps {
+        fill(1, a)
+        start := time.Now()
+        for s in 0..GridSteps / 2 {
+            step(GridW, a, b)
+            step(GridW, b, a)
+        }
+        times[r] = time.Since(start).AsNanos()
+    }
+    try io.Printf("stencil,sword-rows,{},{x},{}\n", threads, bitsOf(total(a)), median(times[0..reps]))
+    return 0
+}

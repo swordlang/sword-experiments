@@ -14,12 +14,12 @@ from pathlib import Path
 
 root = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).parent.parent / "results")
 kernels = ["sum", "saxpy", "stencil", "mandelbrot", "nbody"]
-methods = ["sword", "c-serial", "c-restrict", "c-omp", "c-lanes", "c-lanes-omp",
+methods = ["sword", "sword-rows", "c-serial", "c-restrict", "c-omp", "c-lanes", "c-lanes-omp",
            "c-fastmath-serial", "c-fastmath-omp", "c-native-serial", "c-native-omp",
-           "c-native-lanes", "c-native-lanes-omp", "cpp-thread", "rust-rayon", "rust-slices",
+           "c-native-lanes", "c-native-lanes-omp", "c-clang-serial", "c-clang-omp", "cpp-thread", "rust-rayon", "rust-slices",
            "zig-safe", "zig-fast", "go"]
 
-pieces = ["walked", "walked-mut", "captures", "versioned", "split", "deferred", "lanes"]
+pieces = ["walked", "walked-mut", "captures", "versioned", "split", "deferred", "lanes", "steady"]
 methods[1:1] = ["sword-native"] + [f"sword-without-{p}" for p in pieces]
 
 platforms = sorted(p for p in root.iterdir() if (p / "compare.csv").exists())

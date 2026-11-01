@@ -18,7 +18,7 @@ ROUNDS=${ROUNDS:-3}
 NOTE=${NOTE:-}
 # Sword again with one piece of its compiler switched off at a time, for the
 # ablation; a Sword older than the --without= switch builds none of them.
-ABLATE=${ABLATE-"walked walked-mut captures versioned split deferred lanes"}
+ABLATE=${ABLATE-"walked walked-mut captures versioned split deferred lanes steady"}
 if [ -z "${OMPFLAGS:-}" ] && [ "$(uname)" = Darwin ]; then
     omp=$(brew --prefix libomp 2>/dev/null || echo /opt/homebrew/opt/libomp)
     OMPFLAGS="-Xpreprocessor -fopenmp -I$omp/include -L$omp/lib -lomp"
@@ -52,7 +52,7 @@ has() { case " $LANGS " in *" $1 "*) return 0 ;; esac; return 1; }
     echo "cores: $(getconf _NPROCESSORS_ONLN)"
     echo "threads: $THREADS reps: $REPS rounds: $ROUNDS"
     has sword && echo "sword: $($SHIELD --version), commit ${SWORD_REV:-$(git -C "$(dirname "$SHIELD")" rev-parse --short HEAD 2>/dev/null || echo unknown)}, default flags; sword-without-<piece> adds --without=<piece>"
-    has c && echo "c: $($CC --version | head -1); $CFLAGS $OMPFLAGS; c-fastmath adds -ffast-math, c-native $NATIVE"
+    has c && echo "c: $($CC --version | head -1); $CFLAGS $OMPFLAGS; c-fastmath adds -ffast-math, c-native $NATIVE; c-clang is $($CLANG --version | head -1)"
     has sword && echo "sword-native: shield --emit-llvm, then $($CLANG --version | head -1) -O2 $NATIVE"
     has cpp && echo "cpp: $($CXX --version | head -1); $CXXFLAGS"
     has rust && echo "rust: $(rustc --version), $(cargo --version); cargo build --release; rayon $(sed -n 's/^rayon = "=\(.*\)"/\1/p' "$here/rust/Cargo.toml")"
@@ -78,6 +78,10 @@ if has sword; then
             $($SHIELD --emit-link "$here/sword/bench.sword") -o "$build/sword-native"; then
         echo "sword-native|$build/sword-native|" >> "$progs"
     fi
+    # The stencil by rows needs a Sword with a parallel loop over pieces.
+    if $SHIELD "$here/sword/rows.sword" -o "$build/sword-rows" 2>/dev/null; then
+        echo "sword-rows|$build/sword-rows|" >> "$progs"
+    fi
     for piece in $ABLATE; do
         if $SHIELD --without=$piece "$here/sword/bench.sword" -o "$build/sword-without-$piece" 2>/dev/null; then
             echo "sword-without-$piece|$build/sword-without-$piece|" >> "$progs"
@@ -88,6 +92,11 @@ if has c; then
     $CC $CFLAGS $OMPFLAGS -o "$build/c" "$here/c/bench.c" -lm
     $CC $CFLAGS -ffast-math -DFLAVOR='"c-fastmath"' $OMPFLAGS -o "$build/c-fastmath" "$here/c/bench.c" -lm
     $CC $CFLAGS $NATIVE -DFLAVOR='"c-native"' $OMPFLAGS -o "$build/c-native" "$here/c/bench.c" -lm
+    # The same C through clang, the code generator Sword, Rust and Zig use,
+    # where the C compiler is GCC; where cc is clang already it is the same.
+    if $CLANG $CFLAGS -DFLAVOR='"c-clang"' $OMPFLAGS -o "$build/c-clang" "$here/c/bench.c" -lm 2>/dev/null; then
+        printf '%s\n' "c-clang-serial|$build/c-clang|serial" "c-clang-omp|$build/c-clang|omp" >> "$progs"
+    fi
     printf '%s\n' "c-serial|$build/c|serial" "c-restrict|$build/c|restrict" "c-omp|$build/c|omp" \
         "c-lanes|$build/c|lanes" "c-lanes-omp|$build/c|lanes-omp" \
         "c-fastmath-serial|$build/c-fastmath|serial" "c-fastmath-omp|$build/c-fastmath|omp" \
@@ -124,11 +133,11 @@ for round in $(seq 1 "$ROUNDS"); do
             # The lanes variants exist only for sum, the slices one only for
             # the stencil.
             case $name:$k in
-                c-lanes*:sum|c-native-lanes*:sum|rust-slices:stencil) ;;
-                c-lanes*:*|c-native-lanes*:*|rust-slices:*) continue ;;
+                c-lanes*:sum|c-native-lanes*:sum|rust-slices:stencil|sword-rows:stencil) ;;
+                c-lanes*:*|c-native-lanes*:*|rust-slices:*|sword-rows:*) continue ;;
             esac
             case $name in
-                c-serial|c-restrict|c-lanes|c-fastmath-serial|c-native-serial|c-native-lanes) ts=1 ;;
+                c-serial|c-restrict|c-lanes|c-fastmath-serial|c-native-serial|c-native-lanes|c-clang-serial) ts=1 ;;
                 *) ts=$THREADS ;;
             esac
             for t in $ts; do
