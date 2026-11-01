@@ -80,11 +80,14 @@ inside each program, so every one starts from the same bits.
 | `c-lanes-omp` | `sum` only: the same order, its 64 pieces shared out by OpenMP | no |
 | `c-fastmath-serial` | `c-serial` built with `-ffast-math` | no |
 | `c-fastmath-omp` | `c-omp` built with `-ffast-math` | no |
+| `c-native-*` | `c-serial`, `c-omp`, `c-lanes`, `c-lanes-omp` built for the machine's own CPU (`-march=native` on x86-64, `-mcpu=native` on arm64) | no |
 | `cpp-thread` | `std::thread`, one block per thread | no |
 | `rust-rayon` | rayon's parallel iterators | yes |
+| `rust-slices` | `stencil` only: rayon by rows, each row's neighbours taken as slices and zipped | yes, where the compiler cannot drop them |
 | `zig-safe` | `std.Thread`, one block per thread, `-O safe` | yes |
 | `zig-fast` | the same, `-O fast` | no |
 | `go` | goroutines, one block per thread | yes |
+| `sword-native` | Sword's IR compiled by clang for the machine's own CPU, with the flag `c-native` takes | yes, except where the compiler proves them away |
 | `sword-without-<piece>` | Sword built with `--without=<piece>`: one way its compiler drops or moves a check, or orders a sum, switched off | yes |
 
 Each program prints the median time over its repetitions and a check: the bits
@@ -110,6 +113,12 @@ its suite that way.
 | `split` | a loop reading `xs[j - c]` or `xs[j + c]` checks only its first and last turns |
 | `deferred` | a loop that only accumulates settles its overflow once, at the end |
 | `lanes` | a float `reduce(+)` keeps sixteen sums per piece; without it, one chain, so another answer, and still the same one at any thread count |
+
+Every other build is for the base of its architecture: x86-64 with SSE2 and
+no AVX, armv8-a. The `-native` builds show what the machine's own vector unit
+changes. Sword has no switch for it, so `compare/run.sh` takes its IR from
+`shield --emit-llvm`, compiles it with clang for the machine and links it the
+way `shield` does (`--emit-link`).
 
 What the tables do not show on their own:
 

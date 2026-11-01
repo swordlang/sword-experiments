@@ -1,6 +1,10 @@
 // The five kernels of the comparison in Rust, with rayon's parallel iterators.
 //
-//   bench <kernel> <threads> [reps]
+//   bench <kernel> <threads> [reps] [slices]
+//
+// With "slices" the stencil takes each row's neighbours as slices and zips
+// them, the form that lets the compiler drop the bounds checks; it prints
+// rust-slices.
 //
 // Prints: kernel,method,threads,check,median_ns
 use rayon::prelude::*;
@@ -56,6 +60,30 @@ fn step(w: usize, a: &[f64], b: &mut [f64]) {
             } else {
                 0.25 * (a[k - 1] + a[k + 1] + a[k - w] + a[k + w])
             };
+        }
+    });
+}
+
+// The same sums in the same order as step, so the same bits.
+fn step_slices(w: usize, a: &[f64], b: &mut [f64]) {
+    b.par_chunks_mut(w).enumerate().for_each(|(i, row)| {
+        let mid = &a[i * w..(i + 1) * w];
+        if i == 0 || i == w - 1 {
+            row.copy_from_slice(mid);
+            return;
+        }
+        let up = &a[(i - 1) * w..i * w];
+        let down = &a[(i + 1) * w..(i + 2) * w];
+        row[0] = mid[0];
+        row[w - 1] = mid[w - 1];
+        for ((((o, l), r), u), d) in row[1..w - 1]
+            .iter_mut()
+            .zip(&mid[..w - 2])
+            .zip(&mid[2..])
+            .zip(&up[1..w - 1])
+            .zip(&down[1..w - 1])
+        {
+            *o = 0.25 * (l + r + u + d);
         }
     });
 }
@@ -131,6 +159,12 @@ fn main() {
     let kernel = args[1].as_str();
     let threads: usize = args[2].parse().expect("threads");
     let reps: usize = args.get(3).map_or(5, |r| r.parse().expect("reps"));
+    let slices = args.get(4).is_some_and(|v| v == "slices");
+    if slices && kernel != "stencil" {
+        eprintln!("slices is a stencil method");
+        std::process::exit(2);
+    }
+    let step = if slices { step_slices } else { step };
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build_global()
@@ -205,5 +239,6 @@ fn main() {
         }
     };
     times.sort();
-    println!("{},rust-rayon,{},{},{}", kernel, threads, check, times[reps / 2]);
+    let method = if slices { "rust-slices" } else { "rust-rayon" };
+    println!("{},{},{},{},{}", kernel, method, threads, check, times[reps / 2]);
 }
