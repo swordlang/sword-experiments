@@ -1,5 +1,6 @@
-// The five kernels of the comparison in Zig, with std.Thread: the range is cut
-// into one block per thread, and partial sums are combined in block order.
+// The kernels of the comparison in Zig, with std.Thread: the range is cut into
+// one block per thread, and partial sums are combined in block order. The five
+// of E4, and hist, scan and sort of E5.
 // Built twice: -O safe keeps the bounds checks, -O fast drops them.
 //
 //   bench <kernel> <threads> [reps]
@@ -17,6 +18,11 @@ const mandel_iter = 256;
 const bodies = 4096;
 const body_steps = 4;
 const max_threads = 64;
+const hist_n = 10_000_000;
+const bins = 64;
+const scan_n = 10_000_000;
+const sort_n = 1_000_000;
+const sort_keys = 1000.0;
 
 var threads: usize = 1;
 
@@ -178,6 +184,119 @@ const Move = struct {
     }
 };
 
+// A histogram per thread, added together in block order.
+const Hist = struct {
+    xs: []const f64,
+    part: *[max_threads][bins]f64,
+    fn run(self: *const Hist, lo: usize, hi: usize, k: usize) void {
+        const h = &self.part[k];
+        h.* = @splat(0.0);
+        for (self.xs[lo..hi]) |x| h[@intFromFloat(x * 64.0)] += x;
+    }
+};
+
+fn hist(xs: []const f64, h: *[bins]f64) !void {
+    var part: [max_threads][bins]f64 = undefined;
+    try blocks(xs.len, &Hist{ .xs = xs, .part = &part });
+    h.* = @splat(0.0);
+    for (part[0..threads]) |p| {
+        for (h, p) |*b, q| b.* += q;
+    }
+}
+
+// Each block totals itself, the totals are carried across in order, and each
+// block is written from its carry.
+const ScanTotal = struct {
+    xs: []const f64,
+    carry: []f64,
+    fn run(self: *const ScanTotal, lo: usize, hi: usize, k: usize) void {
+        var s: f64 = 0.0;
+        for (self.xs[lo..hi]) |x| s += x;
+        self.carry[k + 1] = s;
+    }
+};
+
+const ScanWrite = struct {
+    xs: []const f64,
+    out: []f64,
+    carry: []const f64,
+    fn run(self: *const ScanWrite, lo: usize, hi: usize, k: usize) void {
+        var s = self.carry[k];
+        for (lo..hi) |i| {
+            s += self.xs[i];
+            self.out[i] = s;
+        }
+    }
+};
+
+fn scan(xs: []const f64, out: []f64) !void {
+    var carry: [max_threads + 1]f64 = @splat(0.0);
+    try blocks(xs.len, &ScanTotal{ .xs = xs, .carry = carry[0 .. threads + 1] });
+    for (1..threads + 1) |k| carry[k] += carry[k - 1];
+    try blocks(xs.len, &ScanWrite{ .xs = xs, .out = out, .carry = carry[0 .. threads + 1] });
+}
+
+const Rec = struct { key: u32, id: u32 };
+
+fn byKey(_: void, a: Rec, b: Rec) bool {
+    return a.key < b.key;
+}
+
+// std.mem.sortUnstable on each block, then neighbouring blocks merged, the
+// left one first on a tie.
+const SortBlock = struct {
+    xs: []Rec,
+    fn run(self: *const SortBlock, lo: usize, hi: usize, _: usize) void {
+        std.mem.sortUnstable(Rec, self.xs[lo..hi], {}, byKey);
+    }
+};
+
+fn mergeRecs(xs: []Rec, tmp: []Rec, lo: usize, mid: usize, hi: usize) void {
+    var i = lo;
+    var j = mid;
+    var o = lo;
+    while (i < mid and j < hi) : (o += 1) {
+        if (xs[j].key < xs[i].key) {
+            tmp[o] = xs[j];
+            j += 1;
+        } else {
+            tmp[o] = xs[i];
+            i += 1;
+        }
+    }
+    while (i < mid) : ({
+        i += 1;
+        o += 1;
+    }) tmp[o] = xs[i];
+    while (j < hi) : ({
+        j += 1;
+        o += 1;
+    }) tmp[o] = xs[j];
+    @memcpy(xs[lo..hi], tmp[lo..hi]);
+}
+
+fn sortRecs(xs: []Rec, tmp: []Rec) !void {
+    var bounds: [max_threads + 1]usize = undefined;
+    for (0..threads + 1) |k| bounds[k] = xs.len * k / threads;
+    try blocks(xs.len, &SortBlock{ .xs = xs });
+    var width: usize = 1;
+    while (width < threads) : (width *= 2) {
+        var pool: [max_threads]std.Thread = undefined;
+        var started: usize = 0;
+        var k: usize = 0;
+        while (k + width < threads) : (k += 2 * width) {
+            const hi = bounds[@min(k + 2 * width, threads)];
+            pool[started] = try std.Thread.spawn(.{}, mergeRecs, .{ xs, tmp, bounds[k], bounds[k + width], hi });
+            started += 1;
+        }
+        for (pool[0..started]) |t| t.join();
+    }
+}
+
+fn fnv(c: u64, w: u64) u64 {
+    return (c ^ w) *% 1099511628211;
+}
+
 fn since(io: std.Io, t0: std.Io.Timestamp) u64 {
     return @intCast(t0.durationTo(std.Io.Timestamp.now(io, .awake)).nanoseconds);
 }
@@ -187,7 +306,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.arena.allocator();
     const args = try init.minimal.args.toSlice(gpa);
     if (args.len < 3) {
-        std.debug.print("usage: bench sum|saxpy|stencil|mandelbrot|nbody threads [reps]\n", .{});
+        std.debug.print("usage: bench sum|saxpy|stencil|mandelbrot|nbody|hist|scan|sort threads [reps]\n", .{});
         std.process.exit(2);
     }
     const kernel = args[1];
@@ -256,6 +375,39 @@ pub fn main(init: std.process.Init) !void {
             times[r] = since(io, t0);
         }
         check = @bitCast(total(p));
+    } else if (std.mem.eql(u8, kernel, "hist")) {
+        const xs = try gpa.alloc(f64, hist_n);
+        fill(1, xs);
+        var h: [bins]f64 = undefined;
+        for (0..reps) |r| {
+            const t0 = std.Io.Timestamp.now(io, .awake);
+            try hist(xs, &h);
+            times[r] = since(io, t0);
+        }
+        check = 14695981039346656037;
+        for (h) |b| check = fnv(check, @bitCast(b));
+    } else if (std.mem.eql(u8, kernel, "scan")) {
+        const xs = try gpa.alloc(f64, scan_n);
+        const out = try gpa.alloc(f64, scan_n);
+        fill(1, xs);
+        for (xs) |*x| x.* = 2.0 * x.* - 1.0;
+        for (0..reps) |r| {
+            const t0 = std.Io.Timestamp.now(io, .awake);
+            try scan(xs, out);
+            times[r] = since(io, t0);
+        }
+        check = @bitCast(total(out));
+    } else if (std.mem.eql(u8, kernel, "sort")) {
+        const xs = try gpa.alloc(Rec, sort_n);
+        const tmp = try gpa.alloc(Rec, sort_n);
+        for (0..reps) |r| {
+            for (xs, 0..) |*x, i| x.* = .{ .key = @intFromFloat(unit(1, @intCast(i)) * sort_keys), .id = @intCast(i) };
+            const t0 = std.Io.Timestamp.now(io, .awake);
+            try sortRecs(xs, tmp);
+            times[r] = since(io, t0);
+        }
+        check = 14695981039346656037;
+        for (xs) |x| check = fnv(check, x.id);
     } else {
         std.debug.print("unknown kernel\n", .{});
         std.process.exit(2);

@@ -117,6 +117,35 @@ its suite that way.
 | `lanes` | a float `reduce(+)` keeps sixteen sums per piece; without it, one chain, so another answer, and still the same one at any thread count |
 | `steady` | a `mut` piece of `xs.chunks(n)` its turn never reassigns or takes the address of counts as a slice that holds still |
 
+**E5 — where the usual way lets the answer depend on the threads**
+(`compare/`, the same programs and runner as E4). Three more kernels, chosen
+because the way each language usually writes them divides the work by the
+number of threads, and that division reaches the answer:
+
+| kernel | what it does | size | where the threads reach the answer |
+|---|---|---|---|
+| `hist` | 64 bins, each sample adding its own value into the bin it falls in | 10⁷ samples | a private histogram per thread, added together at the end |
+| `scan` | the running sum of doubles in [−1, 1) | 10⁷ | the two-pass scan, one block per thread |
+| `sort` | records of a key (1000 values, so many ties) and an id, sorted by key | 10⁶ | an unstable sort per block, so the order among equal keys follows the blocks |
+
+| method | `hist` | `scan` | `sort` |
+|---|---|---|---|
+| `sword` | `parallel for ... reduce(mergeHist: h)` | `par.Scan` | `par.Sort`, stable, so one right answer |
+| `c-serial` | one loop | one loop | `qsort` |
+| `c-omp` | `reduction(+ : h[:64])` | two passes, a block per thread | `qsort` per thread's block, then merges |
+| `cpp-thread` | a histogram per thread | two passes | `std::sort` per block, `std::inplace_merge` |
+| `rust-rayon` | `fold` and `reduce` | two passes over `par_chunks` (rayon has no scan) | `par_sort_unstable_by_key` |
+| `zig-*` | a histogram per thread | two passes | `std.mem.sortUnstable` per block, then merges |
+| `go` | a histogram per goroutine | two passes | `sort.Slice` per block, then merges |
+
+The check of `hist` and `sort` is FNV-1a over the 64 bins' bits or the ids in
+their final order, so that every element counts in its place; `scan` takes the
+sum of its output, as the E4 kernels do. Sword's sort is the only stable one,
+which is what makes its answer unique; a stable sort in C would be one too.
+C does not say whether `qsort` is stable, and C libraries differ, so even
+`c-serial` may give another order on another system. The ablation does not run on these
+kernels.
+
 Every other build is for the base of its architecture: x86-64 with SSE2 and
 no AVX, armv8-a. The `-native` builds show what the machine's own vector unit
 changes. Sword has no switch for it, so `compare/run.sh` takes its IR from

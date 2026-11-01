@@ -1,4 +1,5 @@
-// The five kernels of the comparison in C.
+// The kernels of the comparison in C: the five of E4, and hist, scan and sort
+// of E5, which have serial and omp only.
 //
 //   serial    plain loops, one thread
 //   restrict  the same loops with every pointer restrict-qualified
@@ -33,6 +34,11 @@ enum {
   MandelIter = 256,
   Bodies = 4096,
   BodySteps = 4,
+  HistN = 10000000,
+  Bins = 64,
+  ScanN = 10000000,
+  SortN = 1000000,
+  SortKeys = 1000,
 };
 
 // splitmix64 of seed + i, scaled to [0, 1): every language draws the same bits.
@@ -265,6 +271,86 @@ static void move_omp(long n, double dt, const double *a, double *v, double *p) {
   }
 }
 
+static void hist_serial(const double *xs, long n, double *h) {
+  for (int j = 0; j < Bins; j++) h[j] = 0.0;
+  for (long i = 0; i < n; i++) h[(int)(xs[i] * 64.0)] += xs[i];
+}
+
+// An array reduction: each thread sums into a private copy, and OpenMP adds
+// the copies together in whatever order the threads finish.
+static void hist_omp(const double *xs, long n, double *h) {
+  for (int j = 0; j < Bins; j++) h[j] = 0.0;
+#pragma omp parallel for reduction(+ : h[:Bins]) schedule(static)
+  for (long i = 0; i < n; i++) h[(int)(xs[i] * 64.0)] += xs[i];
+}
+
+static void scan_serial(const double *xs, double *out, long n) {
+  double s = 0.0;
+  for (long i = 0; i < n; i++) out[i] = s += xs[i];
+}
+
+// The textbook two-pass scan: each thread totals its block, the totals are
+// carried across in order, and each block is then written from its carry.
+static void scan_omp(const double *xs, double *out, long n) {
+  double carry[257] = {0};
+#pragma omp parallel
+  {
+    int t = omp_get_thread_num(), T = omp_get_num_threads();
+    long lo = n * t / T, hi = n * (t + 1) / T;
+    double s = 0.0;
+    for (long i = lo; i < hi; i++) s += xs[i];
+    carry[t + 1] = s;
+#pragma omp barrier
+#pragma omp single
+    for (int k = 1; k <= T; k++) carry[k] += carry[k - 1];
+    s = carry[t];
+    for (long i = lo; i < hi; i++) out[i] = s += xs[i];
+  }
+}
+
+struct rec {
+  uint32_t key, id;
+};
+
+static int by_key(const void *a, const void *b) {
+  uint32_t x = ((const struct rec *)a)->key, y = ((const struct rec *)b)->key;
+  return (x > y) - (x < y);
+}
+
+static void sort_serial(struct rec *xs, long n) { qsort(xs, n, sizeof *xs, by_key); }
+
+// One block per thread sorted with qsort, then neighbouring blocks merged,
+// the left one first on a tie.
+static void merge_recs(struct rec *xs, struct rec *tmp, long lo, long mid, long hi) {
+  long i = lo, j = mid, k = lo;
+  while (i < mid && j < hi) tmp[k++] = xs[j].key < xs[i].key ? xs[j++] : xs[i++];
+  while (i < mid) tmp[k++] = xs[i++];
+  while (j < hi) tmp[k++] = xs[j++];
+  memcpy(xs + lo, tmp + lo, (hi - lo) * sizeof *xs);
+}
+
+static void sort_omp(struct rec *xs, long n, int threads) {
+  long bounds[258];
+  for (int t = 0; t <= threads; t++) bounds[t] = n * t / threads;
+#pragma omp parallel for schedule(static)
+  for (int t = 0; t < threads; t++)
+    qsort(xs + bounds[t], bounds[t + 1] - bounds[t], sizeof *xs, by_key);
+  struct rec *tmp = malloc(n * sizeof *tmp);
+  for (int width = 1; width < threads; width *= 2) {
+#pragma omp parallel for schedule(static)
+    for (int t = 0; t < threads; t += 2 * width) {
+      int m = t + width < threads ? t + width : threads;
+      int e = t + 2 * width < threads ? t + 2 * width : threads;
+      if (m < e) merge_recs(xs, tmp, bounds[t], bounds[m], bounds[e]);
+    }
+  }
+  free(tmp);
+}
+
+// FNV-1a over 64-bit words, the checksum of a sequence where every element
+// counts in its place.
+static uint64_t fnv(uint64_t c, uint64_t w) { return (c ^ w) * 1099511628211ULL; }
+
 static double now_ns(void) {
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
@@ -284,7 +370,7 @@ static uint64_t bits(double v) {
 
 int main(int argc, char **argv) {
   if (argc < 4) {
-    fprintf(stderr, "usage: bench sum|saxpy|stencil|mandelbrot|nbody serial|restrict|omp threads [reps]\n");
+    fprintf(stderr, "usage: bench sum|saxpy|stencil|mandelbrot|nbody|hist|scan|sort serial|restrict|omp threads [reps]\n");
     return 2;
   }
   const char *kernel = argv[1], *method = argv[2];
@@ -296,7 +382,8 @@ int main(int argc, char **argv) {
           : !strcmp(method, "lanes")     ? 3
           : !strcmp(method, "lanes-omp") ? 4
                                          : -1;
-  if (m < 0 || (m > 2 && strcmp(kernel, "sum"))) {
+  int e5 = !strcmp(kernel, "hist") || !strcmp(kernel, "scan") || !strcmp(kernel, "sort");
+  if (m < 0 || (m > 2 && strcmp(kernel, "sum")) || (e5 && m == 1)) {
     fprintf(stderr, "unknown method for %s: %s\n", kernel, method);
     return 2;
   }
@@ -374,6 +461,39 @@ int main(int argc, char **argv) {
       times[r] = now_ns() - t0;
     }
     check = bits(total(p, 3 * n));
+  } else if (!strcmp(kernel, "hist")) {
+    double *xs = malloc(HistN * sizeof *xs), h[Bins];
+    fill(1, xs, HistN);
+    for (int r = 0; r < reps; r++) {
+      double t0 = now_ns();
+      if (m == 0) hist_serial(xs, HistN, h);
+      else hist_omp(xs, HistN, h);
+      times[r] = now_ns() - t0;
+    }
+    check = 14695981039346656037ULL;
+    for (int j = 0; j < Bins; j++) check = fnv(check, bits(h[j]));
+  } else if (!strcmp(kernel, "scan")) {
+    double *xs = malloc(ScanN * sizeof *xs), *out = malloc(ScanN * sizeof *out);
+    fill(1, xs, ScanN);
+    for (long i = 0; i < ScanN; i++) xs[i] = 2.0 * xs[i] - 1.0;
+    for (int r = 0; r < reps; r++) {
+      double t0 = now_ns();
+      if (m == 0) scan_serial(xs, out, ScanN);
+      else scan_omp(xs, out, ScanN);
+      times[r] = now_ns() - t0;
+    }
+    check = bits(total(out, ScanN));
+  } else if (!strcmp(kernel, "sort")) {
+    struct rec *xs = malloc(SortN * sizeof *xs);
+    for (int r = 0; r < reps; r++) {
+      for (long i = 0; i < SortN; i++) xs[i] = (struct rec){(uint32_t)(unit(1, i) * SortKeys), (uint32_t)i};
+      double t0 = now_ns();
+      if (m == 0) sort_serial(xs, SortN);
+      else sort_omp(xs, SortN, threads);
+      times[r] = now_ns() - t0;
+    }
+    check = 14695981039346656037ULL;
+    for (long i = 0; i < SortN; i++) check = fnv(check, xs[i].id);
   } else {
     fprintf(stderr, "unknown kernel\n");
     return 2;
