@@ -76,11 +76,16 @@ inside each program, so every one starts from the same bits.
 | `c-serial` | not: one thread | no |
 | `c-restrict` | not: one thread, every pointer `restrict` | no |
 | `c-omp` | `#pragma omp parallel for` | no |
+| `c-lanes` | `sum` only, one thread: sixteen accumulators in Sword's order | no |
+| `c-lanes-omp` | `sum` only: the same order, its 64 pieces shared out by OpenMP | no |
+| `c-fastmath-serial` | `c-serial` built with `-ffast-math` | no |
+| `c-fastmath-omp` | `c-omp` built with `-ffast-math` | no |
 | `cpp-thread` | `std::thread`, one block per thread | no |
 | `rust-rayon` | rayon's parallel iterators | yes |
 | `zig-safe` | `std.Thread`, one block per thread, `-O safe` | yes |
 | `zig-fast` | the same, `-O fast` | no |
 | `go` | goroutines, one block per thread | yes |
+| `sword-without-<piece>` | Sword built with `--without=<piece>`: one way its compiler drops or moves a check, or orders a sum, switched off | yes |
 
 Each program prints the median time over its repetitions and a check: the bits
 of the answer (the sum, for the kernels that produce an array, taken in index
@@ -89,15 +94,43 @@ every method at every thread count once per round, all of them in turn, so that
 no language always gets the cold or the hot machine; the tables take the
 median across rounds and count how many different checks each method gave.
 
+The `sword-without-` rows are the ablation. `shield` takes two switches that
+are not in its usage, because they measure the compiler rather than build a
+program: `--without=` names one or more of the pieces below, separated by
+commas, and `--audit` keeps every bounds check the compiler dropped as one that
+panics with a message of its own. `tests/audit.sh` in the Sword repository runs
+its suite that way.
+
+| piece | what is switched off |
+|---|---|
+| `walked` | `xs[i]` in `for i in a..xs.len`, `xs` immutable, needs no check |
+| `walked-mut` | the same in a `parallel for` with `xs` `mut`, which the race checker allows |
+| `captures` | what a `parallel for` only reads is copied into each piece once |
+| `versioned` | indexing that no turn can move is tested once, before the loop |
+| `split` | a loop reading `xs[j - c]` or `xs[j + c]` checks only its first and last turns |
+| `deferred` | a loop that only accumulates settles its overflow once, at the end |
+| `lanes` | a float `reduce(+)` keeps sixteen sums per piece; without it, one chain, so another answer, and still the same one at any thread count |
+
 What the tables do not show on their own:
+
+- A float `reduce(+)` in Sword has its order in the language's definition: 64
+  pieces, sixteen sums in each, folded by halves. `c-lanes` writes that order
+  out by hand and gives Sword's bits, at any thread count, so its time is what
+  that order costs in C; `c-fastmath` lets the compiler pick an order, which is
+  as fast and gives another answer per thread count. Under `-ffast-math` the
+  checksum itself is summed through a `volatile`, so that a different check is
+  a different answer and not a different checksum.
 
 - On arm64, C and C++ (GCC and clang alike) and Go fuse `a*b + c` into one
   instruction, rounded once, where Sword, Rust and Zig round the product and the
   sum apart. It moves the count of `mandelbrot` there: 269 789 418 for C and
   C++, 269 789 415 for Go, 269 789 451 for the rest, and C with
   `-ffp-contract=off` or Go with the products converted explicitly give
-  269 789 451 too. Baseline x86-64 has no such instruction, and there every
-  method agrees on every kernel.
+  269 789 451 too. On x86-64 the C answer follows the compiler: the run of
+  2026-10-30, GCC 13 on Ubuntu 24.04, gave 269 789 451; the run of 2026-11-01,
+  after GitHub moved `ubuntu-latest` to Ubuntu 26 with GCC 15, gives
+  269 789 418 from the same source and the same `-O2`. Sword gave 269 789 451
+  in both, on every machine.
 - Sword's `parallel for` may write an array only at the index it is on, so its
   stencil walks the grid as one range and finds the row and column by dividing.
   The other languages loop over rows.
@@ -185,13 +218,15 @@ docker run --rm -v "$PWD/sword.tar:/sword.tar:ro" -v "$PWD:/exp" sword-ci:arm64 
 - During the run on the M4, a stuck process (Sword issue #41) held ~10% of one
   of the ten cores; it is noted in `env.txt`.
 - E4 (`results/gh-*/compare*`, tables in `results/compare.md`) is newer than
-  the rest: Sword at commit `5401ffd` of `develop`, after 0.3.2, on an AMD EPYC
-  7763, an arm64 Neoverse N2 (4 cores each) and a virtual Apple M1 (3 cores;
-  GitHub's macOS runner gave a virtual M2 Pro with 5 cores to the run before,
-  7463b61), three rounds of five repetitions. Each `compare-env.txt` has every
-  compiler's version and flags.
-- In E4's `sum`, Sword gave one answer on every machine at every thread count.
-  The other parallel methods gave one per thread count, and rayon more than
-  that: with the thread count fixed at 4 or more, its work stealing cut the sum
-  differently from one round to the next. GCC's OpenMP did the same at 16
-  threads on arm64, as in E1b.
+  the rest: Sword at commit `ef4a242` of `develop`, after 0.3.2, on an AMD EPYC
+  9V74, an arm64 Neoverse N2 (4 cores each) and a virtual Apple M2 Pro (5
+  cores), three rounds of five repetitions. Earlier runs are in this
+  repository's history: `5401ffd` in de0da86, `8be3586` in 7463b61. Each
+  `compare-env.txt` has every compiler's version and flags.
+- In E4, Sword gave one answer per kernel on every machine at every thread
+  count, and so did every `sword-without-` build; the last table of
+  `results/compare.md` counts them over all three machines together. In the
+  `sum`, the other parallel methods gave one answer per thread count or more:
+  rayon's work stealing cut the sum differently from one round to the next
+  from 2 or 4 threads up, and GCC's OpenMP, with and without `-ffast-math`,
+  did the same at 8 and 16 threads on both Linux machines, as in E1b.
