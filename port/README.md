@@ -130,6 +130,61 @@ deriche is in `float`. Its constants come from `expf` and `powf` in C; Sword
 has neither for `f32`, so the port takes them in `f64` with `num.Exp` and
 `num.Log` and rounds, and they come out with the same bits.
 
+### What the work costs in time
+
+A rewrite that adds a copy could be slower for that reason alone, so
+`polybench/rewrite-cost/run.sh` separates the rewrite from the language. Each
+of the nine "work" kernels is written twice in C with OpenMP: as PolyBench has
+it, the parallel loop the port names marked, and rewritten the way the port
+is, with its copy, transpose or second loop and the same loops marked. Before
+anything is timed, both give the bits of unmodified PolyBench at
+SMALL_DATASET, at one thread and at four. Then the two C versions and the
+Sword port run at LARGE_DATASET, alternating within each round, and each
+reports only the kernel's time. `rewrite-cost/m4.csv` holds five rounds on an
+Apple M4 (4 performance and 6 efficiency cores, macOS 27.0.1, Apple clang 21
+with `-O2 -ffp-contract=off`, libomp 23.1.2, Shield at `develop` e5982bd).
+`rewrite-cost/analyze.py` prints the medians:
+
+| kernel | threads | C, s | C rewritten, s | Sword, s | rewritten / C | Sword / rewritten |
+|---|---|---|---|---|---|---|
+| lu | 1 | 1.648 | 1.616 | 3.731 | 0.98 | 2.31 |
+| lu | 4 | 1.087 | 1.080 | 1.691 | 0.99 | 1.57 |
+| ludcmp | 1 | 1.584 | 1.584 | 1.691 | 1.00 | 1.07 |
+| ludcmp | 4 | 1.028 | 1.037 | 1.074 | 1.01 | 1.04 |
+| floyd-warshall | 1 | 10.019 | 10.021 | 11.644 | 1.00 | 1.16 |
+| floyd-warshall | 4 | 2.656 | 2.650 | 3.121 | 1.00 | 1.18 |
+| trmm | 1 | 0.366 | 0.381 | 1.661 | 1.04 | 4.36 |
+| trmm | 4 | 0.110 | 0.172 | 0.427 | 1.56 | 2.48 |
+| symm | 1 | 0.705 | 0.313 | 0.384 | 0.44 | 1.23 |
+| symm | 4 | 0.195 | 0.081 | 0.101 | 0.42 | 1.25 |
+| gramschmidt | 1 | 1.237 | 0.648 | 0.673 | 0.52 | 1.04 |
+| gramschmidt | 4 | 0.371 | 0.232 | 0.257 | 0.63 | 1.10 |
+| covariance | 1 | 0.851 | 0.862 | 0.877 | 1.01 | 1.02 |
+| covariance | 4 | 0.381 | 0.386 | 0.228 | 1.01 | 0.59 |
+| correlation | 1 | 0.863 | 0.862 | 0.876 | 1.00 | 1.02 |
+| correlation | 4 | 0.381 | 0.385 | 0.231 | 1.01 | 0.60 |
+| deriche | 1 | 0.113 | 0.144 | 0.138 | 1.27 | 0.96 |
+| deriche | 4 | 0.032 | 0.062 | 0.055 | 1.93 | 0.88 |
+
+The slowest of a cell's five rounds is within 6 % of the fastest, except the
+unmodified C of symm (17 % at one thread, 27 % at four), ludcmp (17 % at one)
+and deriche (11 % at one), and deriche rewritten at four (8 %).
+
+For five of the nine the rewrite costs nothing: lu, ludcmp, floyd-warshall,
+covariance and correlation are within 2 % of the C they came from. Two pay
+for it. trmm, whose copy of `B` buys the outer parallel loop, takes 1.56
+times the C at four threads; deriche, whose two passes down the columns write
+transposed arrays, takes 1.27 times at one thread and 1.93 at four. Two come
+out faster, symm and gramschmidt, where the rewrite walks rows and the C
+walks columns.
+
+The last column is the language against the same loops in C. Outside lu and
+trmm every cell is between 0.88 and 1.25, except covariance and correlation
+at four threads, which take 0.6 of the C. lu (2.31 at one thread) and trmm
+(4.36) are slower
+in Sword for reasons that are not the rewrite, since the C rewritten the same
+way is not.
+
 ## Cilk
 
 `cilk/run.sh` downloads Cilk-5.4.6 at a pinned commit, checks its SHA-256,
