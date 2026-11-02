@@ -53,7 +53,7 @@ has() { case " $LANGS " in *" $1 "*) return 0 ;; esac; return 1; }
     echo "cores: $(getconf _NPROCESSORS_ONLN)"
     echo "threads: $THREADS reps: $REPS rounds: $ROUNDS"
     has sword && echo "sword: $($SHIELD --version), commit ${SWORD_REV:-$(git -C "$(dirname "$SHIELD")" rev-parse --short HEAD 2>/dev/null || echo unknown)}, default flags; sword-without-<piece> adds --without=<piece>"
-    has c && echo "c: $($CC --version | head -1); $CFLAGS $OMPFLAGS; c-fastmath adds -ffast-math, c-native $NATIVE; c-clang is $($CLANG --version | head -1)"
+    has c && echo "c: $($CC --version | head -1); $CFLAGS $OMPFLAGS; c-fastmath adds -ffast-math, c-nofma -ffp-contract=off, c-native $NATIVE; c-clang is $($CLANG --version | head -1)"
     has sword && echo "sword-native: shield --emit-llvm, then $($CLANG --version | head -1) -O2 $NATIVE"
     has cpp && echo "cpp: $($CXX --version | head -1); $CXXFLAGS"
     has rust && echo "rust: $(rustc --version), $(cargo --version); cargo build --release; rayon $(sed -n 's/^rayon = "=\(.*\)"/\1/p' "$here/rust/Cargo.toml")"
@@ -82,6 +82,10 @@ if has sword; then
     # The stencil by rows needs a Sword with a parallel loop over pieces.
     if $SHIELD "$here/sword/rows.sword" -o "$build/sword-rows" 2>/dev/null; then
         echo "sword-rows|$build/sword-rows|" >> "$progs"
+        # steady only acts on a loop over pieces, which bench.sword has none of.
+        if $SHIELD --without=steady "$here/sword/rows.sword" -o "$build/sword-rows-without-steady" 2>/dev/null; then
+            echo "sword-rows-without-steady|$build/sword-rows-without-steady|" >> "$progs"
+        fi
     fi
     for piece in $ABLATE; do
         if $SHIELD --without=$piece "$here/sword/bench.sword" -o "$build/sword-without-$piece" 2>/dev/null; then
@@ -92,6 +96,9 @@ fi
 if has c; then
     $CC $CFLAGS $OMPFLAGS -o "$build/c" "$here/c/bench.c" -lm
     $CC $CFLAGS -ffast-math -DFLAVOR='"c-fastmath"' $OMPFLAGS -o "$build/c-fastmath" "$here/c/bench.c" -lm
+    # Where the machine has a fused multiply-add, the C compilers may turn
+    # a*b + c into it and round once where Sword rounds twice; this one never.
+    $CC $CFLAGS -ffp-contract=off -DFLAVOR='"c-nofma"' $OMPFLAGS -o "$build/c-nofma" "$here/c/bench.c" -lm
     $CC $CFLAGS $NATIVE -DFLAVOR='"c-native"' $OMPFLAGS -o "$build/c-native" "$here/c/bench.c" -lm
     # The same C through clang, the code generator Sword, Rust and Zig use,
     # where the C compiler is GCC; where cc is clang already it is the same.
@@ -101,6 +108,7 @@ if has c; then
     printf '%s\n' "c-serial|$build/c|serial" "c-restrict|$build/c|restrict" "c-omp|$build/c|omp" \
         "c-lanes|$build/c|lanes" "c-lanes-omp|$build/c|lanes-omp" \
         "c-fastmath-serial|$build/c-fastmath|serial" "c-fastmath-omp|$build/c-fastmath|omp" \
+        "c-nofma-serial|$build/c-nofma|serial" "c-nofma-omp|$build/c-nofma|omp" \
         "c-native-serial|$build/c-native|serial" "c-native-omp|$build/c-native|omp" \
         "c-native-lanes|$build/c-native|lanes" "c-native-lanes-omp|$build/c-native|lanes-omp" >> "$progs"
 fi
@@ -136,13 +144,13 @@ for round in $(seq 1 "$ROUNDS"); do
             # The E5 kernels have no restrict variant, and the ablation is
             # about the checks of the E4 ones.
             case $name:$k in
-                c-lanes*:sum|c-native-lanes*:sum|rust-slices:stencil|sword-rows:stencil) ;;
-                c-lanes*:*|c-native-lanes*:*|rust-slices:*|sword-rows:*) continue ;;
+                c-lanes*:sum|c-native-lanes*:sum|rust-slices:stencil|sword-rows*:stencil) ;;
+                c-lanes*:*|c-native-lanes*:*|rust-slices:*|sword-rows*:*) continue ;;
                 c-restrict:hist|c-restrict:scan|c-restrict:sort) continue ;;
                 sword-without-*:hist|sword-without-*:scan|sword-without-*:sort) continue ;;
             esac
             case $name in
-                c-serial|c-restrict|c-lanes|c-fastmath-serial|c-native-serial|c-native-lanes|c-clang-serial) ts=1 ;;
+                c-serial|c-restrict|c-lanes|c-fastmath-serial|c-nofma-serial|c-native-serial|c-native-lanes|c-clang-serial) ts=1 ;;
                 *) ts=$THREADS ;;
             esac
             for t in $ts; do
@@ -155,6 +163,7 @@ for round in $(seq 1 "$ROUNDS"); do
                     # The program calls itself sword whatever it was built with.
                     case $name in
                         sword-without-*|sword-native) line=$(printf '%s\n' "$line" | sed "s/^\([^,]*\),sword,/\1,$name,/") ;;
+                        sword-rows-without-*) line=$(printf '%s\n' "$line" | sed "s/^\([^,]*\),sword-rows,/\1,$name,/") ;;
                     esac
                 fi
                 echo "$round,$line" >> "$out/compare.csv"

@@ -14,8 +14,8 @@ from pathlib import Path
 
 root = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).parent.parent / "results")
 kernels = ["sum", "saxpy", "stencil", "mandelbrot", "nbody", "hist", "scan", "sort"]
-methods = ["sword", "sword-rows", "c-serial", "c-restrict", "c-omp", "c-lanes", "c-lanes-omp",
-           "c-fastmath-serial", "c-fastmath-omp", "c-native-serial", "c-native-omp",
+methods = ["sword", "sword-rows", "sword-rows-without-steady", "c-serial", "c-restrict", "c-omp", "c-lanes", "c-lanes-omp",
+           "c-fastmath-serial", "c-fastmath-omp", "c-nofma-serial", "c-nofma-omp", "c-native-serial", "c-native-omp",
            "c-native-lanes", "c-native-lanes-omp", "c-clang-serial", "c-clang-omp", "cpp-thread", "rust-rayon", "rust-slices",
            "zig-safe", "zig-fast", "go"]
 
