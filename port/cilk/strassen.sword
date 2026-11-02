@@ -1,0 +1,218 @@
+// Cilk-5.4.6 examples/strassen.cilk: Strassen's multiplication, seven
+// products spawned at each level, down to a divide and conquer with eight
+// columns of sums at a time.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: rewritten. Of the seven spawns at each level, three write
+// temporaries of their own and four write a quadrant of C. A quadrant is
+// half of each of half the rows, not one run of C, so it cannot be handed to
+// a task; each of those four writes a temporary of its own instead, and the
+// loop that combines the products, which reads and writes every quadrant of
+// C after the sync, reads the four temporaries in place of C's quadrants
+// before it. The values each quadrant holds before that loop are the same,
+// so the bits are. The program prints what the C prints and the bits of C.
+// Args: -n 512
+// Answer: ^(Options|C bits)
+// Patch: s/^FILE_IDENTITY\(ident,/static const char *ident __attribute__((unused)) = (/
+// Patch: s/^     if \(verify\)$/     { unsigned long long h = 14695981039346656037ULL, w; int q; for (q = 0; q < n * n; q++) { memcpy(&w, &C2[q], 8); h = (h ^ w) * 1099511628211ULL; } printf("C bits = %llx\\n", h); }\n     if (verify)/
+
+import "std/io"
+import "std/mem"
+
+const Naive = 16
+const DivideAndConquer = 64
+const N = 512
+
+// C = A B, or C += A B, eight columns of C at a time, as FastNaiveMatrixMultiply
+// and FastAdditiveNaiveMatrixMultiply: without add, the first product is the
+// sum's start.
+func fastNaive(mut c []f64, co i64, cw i64, a []f64, ao i64, aw i64, b []f64, bo i64,
+    bw i64, n i64, add bool) {
+    for v in 0..n {
+        mut h := i64(0)
+        for h < n {
+            mut s := [8]f64{}
+            mut first := i64(0)
+            if add {
+                for t in 0..8 {
+                    s[t] = c[co + v * cw + h + t]
+                }
+            } else {
+                x := a[ao + v * aw]
+                for t in 0..8 {
+                    s[t] = x * b[bo + h + t]
+                }
+                first = 1
+            }
+            for p in first..n {
+                x := a[ao + v * aw + p]
+                for t in 0..8 {
+                    s[t] = s[t] + x * b[bo + p * bw + h + t]
+                }
+            }
+            for t in 0..8 {
+                c[co + v * cw + h + t] = s[t]
+            }
+            h += 8
+        }
+    }
+}
+
+func quad(o i64, w i64, q i64, r i64, k i64) i64 {
+    return o + r * w * q + k * q
+}
+
+func divideAndConquer(mut c []f64, co i64, cw i64, a []f64, ao i64, aw i64, b []f64,
+    bo i64, bw i64, n i64, add bool) {
+    q := n / 2
+    // The eight products in the C's order: C00 A00 B00, C01 A00 B01,
+    // C11 A10 B01, C10 A10 B00, then the same with A's other column and B's
+    // other row, added.
+    cs := [8]i64{0, 1, 3, 2, 0, 1, 3, 2}
+    as := [8]i64{0, 0, 2, 2, 1, 1, 3, 3}
+    bs := [8]i64{0, 1, 1, 0, 2, 3, 3, 2}
+    for t in 0..8 {
+        cq := quad(co, cw, q, cs[t] / 2, cs[t] % 2)
+        aq := quad(ao, aw, q, as[t] / 2, as[t] % 2)
+        bq := quad(bo, bw, q, bs[t] / 2, bs[t] % 2)
+        more := add || t >= 4
+        if q > Naive {
+            divideAndConquer(c, cq, cw, a, aq, aw, b, bq, bw, q, more)
+        } else {
+            fastNaive(c, cq, cw, a, aq, aw, b, bq, bw, q, more)
+        }
+    }
+}
+
+func strassen(mut c []f64, co i64, cw i64, a []f64, ao i64, aw i64, b []f64, bo i64,
+    bw i64, n i64, fails *atomic[i64]) {
+    if n <= DivideAndConquer {
+        divideAndConquer(c, co, cw, a, ao, aw, b, bo, bw, n, false)
+        return
+    }
+    q := n / 2
+    qq := u64(q * q)
+    mut heap := mem.NewSystem()
+    mut s1 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut s2 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut s3 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut s4 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut s5 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut s6 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut s7 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut s8 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut m2 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut m5 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut t1 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut c11 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut c12 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut c21 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    mut c22 := mem.Alloc[f64](&heap, qq) orelse { fails.Add(1); return }
+    a11 := ao
+    a12 := ao + q
+    a21 := ao + aw * q
+    a22 := a21 + q
+    b11 := bo
+    b12 := bo + q
+    b21 := bo + bw * q
+    b22 := b21 + q
+    for r in 0..q {
+        for k in 0..q {
+            e := r * q + k
+            ea := r * aw + k
+            eb := r * bw + k
+            s1[e] = a[a21 + ea] + a[a22 + ea]
+            s2[e] = s1[e] - a[a11 + ea]
+            s4[e] = a[a12 + ea] - s2[e]
+            s5[e] = b[b12 + eb] - b[b11 + eb]
+            s6[e] = b[b22 + eb] - s5[e]
+            s8[e] = s6[e] - b[b21 + eb]
+            s3[e] = a[a11 + ea] - a[a21 + ea]
+            s7[e] = b[b22 + eb] - b[b12 + eb]
+        }
+    }
+    scope {
+        spawn strassen(m2, 0, q, a, a11, aw, b, b11, bw, q, fails)
+        spawn strassen(m5, 0, q, s1, 0, q, s5, 0, q, q, fails)
+        spawn strassen(t1, 0, q, s2, 0, q, s6, 0, q, q, fails)
+        spawn strassen(c22, 0, q, s3, 0, q, s7, 0, q, q, fails)
+        spawn strassen(c11, 0, q, a, a12, aw, b, b21, bw, q, fails)
+        spawn strassen(c12, 0, q, s4, 0, q, b, b22, bw, q, fails)
+        spawn strassen(c21, 0, q, a, a22, aw, s8, 0, q, q, fails)
+    }
+    for r in 0..q {
+        for k in 0..q {
+            e := r * q + k
+            o := co + r * cw + k
+            x1 := t1[e] + m2[e]
+            x2 := c22[e] + x1
+            c[o] = c11[e] + m2[e]
+            c[o + q] = c12[e] + (m5[e] + x1)
+            c[o + cw * q + q] = m5[e] + x2
+            c[o + cw * q] = -c21[e] + x2
+        }
+    }
+    mem.Free[f64](&heap, s1)
+    mem.Free[f64](&heap, s2)
+    mem.Free[f64](&heap, s3)
+    mem.Free[f64](&heap, s4)
+    mem.Free[f64](&heap, s5)
+    mem.Free[f64](&heap, s6)
+    mem.Free[f64](&heap, s7)
+    mem.Free[f64](&heap, s8)
+    mem.Free[f64](&heap, m2)
+    mem.Free[f64](&heap, m5)
+    mem.Free[f64](&heap, t1)
+    mem.Free[f64](&heap, c11)
+    mem.Free[f64](&heap, c12)
+    mem.Free[f64](&heap, c21)
+    mem.Free[f64](&heap, c22)
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    n := i64(N)
+    mut r := mem.Alloc[u32](&heap, u64(2 * n * n + 344)) orelse return error.OutOfMemory
+    mut a := mem.Alloc[f64](&heap, u64(n * n)) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, u64(n * n)) orelse return error.OutOfMemory
+    mut c := mem.Alloc[f64](&heap, u64(n * n)) orelse return error.OutOfMemory
+
+    // glibc's rand() seeded with 1: the additive generator of random_r, TYPE_3.
+    mut word := i64(1)
+    r[0] = 1
+    for i in 1..31 {
+        hi := word / 127773
+        lo := word % 127773
+        word = 16807 * lo - 2836 * hi
+        if word < 0 {
+            word += 2147483647
+        }
+        r[i] = u32(word)
+    }
+    for i in 31..34 {
+        r[i] = r[i - 31]
+    }
+    for i in 34..r.len {
+        r[i] = r[i - 31] +% r[i - 3]
+    }
+    for i in 0..n * n {
+        a[i] = f64(i64(r[344 + i] >> 1)) / 2147483647.0
+        b[i] = f64(i64(r[344 + n * n + i] >> 1)) / 2147483647.0
+    }
+
+    mut fails := atomic[i64](0)
+    strassen(c, 0, n, a, 0, n, b, 0, n, n, &fails)
+    if fails.Load() > 0 {
+        return error.OutOfMemory
+    }
+
+    mut h := u64(14695981039346656037)
+    for i in 0..n * n {
+        mut v := c[i]
+        w := [*]u64(&v)
+        h = (h ^ w[0]) *% 1099511628211
+    }
+    try io.Printf("C bits = {x}\n", h)
+    try io.Printf("Options: n = {}\n", n)
+    return 0
+}

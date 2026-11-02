@@ -1,0 +1,382 @@
+// Cilk-5.4.6 examples/ck.cilk: checkers without double jumps, both sides
+// played by an alpha-beta search deepened one ply at a time.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: rewritten. srch searches its first move alone, then spawns the
+// others with the window the first left; an inlet takes their answers as
+// they come, and aborts the rest at a cutoff. At the root every move is
+// searched alone, in an order shuffled by Cilk_rand with last iteration's
+// best move put first. Below the root the move order also puts first a
+// killer move from a table every task reads and writes without a lock,
+// which is a race; the port leaves that heuristic out below the root.
+// Sword stops no task, so the spawned moves all run with the window they
+// were given, and the parent takes their answers in the order of the moves
+// as the inlet would, stopping at the first cutoff. Each spawned move is a
+// task of its own through chunks over the answers, the change of form.
+// Neither the order below the root nor the windows the spawned moves get
+// changes what the root sees: the root searches with the whole window, and
+// a move takes the root's best only by an exact score above it. So every
+// score and move printed is the C's.
+// Args: -b 7 -w 8
+// Answer: ^(Starting| *[0-9]+\)| (--|WP|BP|WK|BK) |Options| +wite)
+
+import "std/io"
+
+const PAWN = 1
+const KING = 2
+const WHITE = 4
+const BLACK = 8
+const INF = 900000
+const WIN_SCORE = 100000
+
+struct Position {
+    plyOfGame i64
+    ply i64
+    board [128]i64
+    incEval i64
+    depth i64
+    alpha i64
+    beta i64
+}
+
+struct Root {
+    rng u64
+    killer i64
+    move i64
+}
+
+func evalOf(piece i64) i64 {
+    if piece == WHITE + PAWN || piece == BLACK + PAWN {
+        return 10
+    }
+    if piece == WHITE + KING || piece == BLACK + KING {
+        return 12
+    }
+    return 0
+}
+
+func colorEval(piece i64) i64 {
+    if piece == WHITE + PAWN {
+        return -10
+    }
+    if piece == WHITE + KING {
+        return -12
+    }
+    return evalOf(piece)
+}
+
+func dir(cix i64, d i64) i64 {
+    if cix == 0 {
+        return [4]i64{15, 17, -17, -15}[d]
+    }
+    return [4]i64{-15, -17, 15, 17}[d]
+}
+
+func gen(p Position, mut mvl []i64) i64 {
+    mut ctm := BLACK
+    mut cix := i64(1)
+    if (p.plyOfGame & 1) != 0 {
+        ctm = WHITE
+        cix = 0
+    }
+    mut count := i64(0)
+    mut cap := i64(0)
+    mut i := i64(0)
+    for i < 0x78 {
+        if (i & 0x88) != 0 {
+            i += 8
+        }
+        if (p.board[i] & ctm) != 0 {
+            for d in 0..i64(4) {
+                if d == 2 && (p.board[i] & PAWN) != 0 {
+                    break
+                }
+                dest := i + dir(cix, d)
+                if (dest & 0x88) != 0 {
+                    continue
+                }
+                if p.board[dest] == 0 {
+                    mvl[count] = (i << 8) + dest
+                    count += 1
+                } else if (p.board[dest] & ctm) == 0 {
+                    beyond := dest + dir(cix, d)
+                    if (beyond & 0x88) != 0 {
+                        continue
+                    }
+                    if p.board[beyond] == 0 {
+                        mvl[count] = (i << 8) + dest
+                        count += 1
+                        cap += 1
+                    }
+                }
+            }
+        }
+        i += 1
+    }
+    if cap != 0 {
+        mut kept := i64(0)
+        for k in 0..count {
+            if p.board[mvl[k] & 0xff] != 0 {
+                mvl[kept] = mvl[k]
+                kept += 1
+            }
+        }
+        count = kept
+    }
+    return count
+}
+
+func make(mut p *Position, mv i64) {
+    if mv == 0 {
+        return
+    }
+    from := mv >> 8
+    mut to := mv & 0xff
+    if p.board[to] != 0 {
+        p.incEval -= evalOf(p.board[to])
+        p.board[to] = 0
+        to = to + (to - from)
+    }
+    p.board[to] = p.board[from]
+    p.board[from] = 0
+    if p.board[to] == BLACK + PAWN && to < 8 {
+        p.board[to] = BLACK + KING
+        p.incEval -= evalOf(BLACK + KING)
+        p.incEval += evalOf(BLACK + PAWN)
+    } else if p.board[to] == WHITE + PAWN && to >= 0x70 {
+        p.board[to] = WHITE + KING
+        p.incEval -= evalOf(WHITE + KING)
+        p.incEval += evalOf(WHITE + PAWN)
+    }
+}
+
+// What srch does on entering a position: negamax the window, make the move.
+func enter(old Position, mv i64) Position {
+    mut p := old
+    p.incEval = -p.incEval
+    x := p.alpha
+    p.alpha = -p.beta
+    p.beta = -x
+    p.plyOfGame += 1
+    p.depth -= 1
+    p.ply += 1
+    make(&p, mv)
+    return p
+}
+
+func srch(old Position, mv i64, mut out []i64) {
+    mut p := enter(old, mv)
+    mut list := [32]i64{}
+    count := gen(p, list[..])
+    if count == 0 {
+        out[0] = -WIN_SCORE + p.ply
+        return
+    }
+    if p.depth < 0 && p.board[list[0] & 0xff] == 0 {
+        out[0] = p.incEval
+        return
+    }
+    mut best := -INF
+    mut first := [1]i64{}
+    srch(p, list[0], first[..])
+    cur := -first[0]
+    if cur > best {
+        best = cur
+    }
+    if cur >= p.beta {
+        out[0] = best
+        return
+    }
+    if cur > p.alpha {
+        p.alpha = cur
+    }
+    if count > 1 {
+        mut all := [32]i64{}
+        mut answers := all[0..count - 1]
+        scope {
+            for off, slot in answers.chunks(1) {
+                spawn srch(p, list[off + 1], slot)
+            }
+        }
+        for k in 0..count - 1 {
+            e := -answers[k]
+            if e > best {
+                best = e
+                if e > p.alpha {
+                    p.alpha = e
+                }
+            }
+            if e >= p.beta {
+                break
+            }
+        }
+    }
+    out[0] = best
+}
+
+// srch at the root, ply 1: every move alone, in the shuffled order.
+func root(old Position, mut r *Root) i64 {
+    mut p := enter(old, 0)
+    mut list := [32]i64{}
+    count := gen(p, list[..])
+    for i in 0..count {
+        mut c := i64(32)
+        for c >= count {
+            r.rng = r.rng *% 1103515245 +% 12345
+            c = i64((r.rng >> 16) % 2147483648) & 31
+        }
+        t := list[i]
+        list[i] = list[c]
+        list[c] = t
+    }
+    for i in 0..count {
+        if list[i] == r.killer {
+            list[i] = list[0]
+            list[0] = r.killer
+            break
+        }
+    }
+    if count == 0 {
+        return -WIN_SCORE + p.ply
+    }
+    if p.depth < 0 && p.board[list[0] & 0xff] == 0 {
+        return p.incEval
+    }
+    mut best := -INF
+    for x in 0..count {
+        mut answer := [1]i64{}
+        srch(p, list[x], answer[..])
+        cur := -answer[0]
+        if cur > best {
+            r.killer = list[x]
+            best = cur
+            r.move = list[x]
+        }
+        if cur >= p.beta {
+            r.killer = list[x]
+            return best
+        }
+        if cur > p.alpha {
+            p.alpha = cur
+        }
+    }
+    return best
+}
+
+func width(n i64, base i64) i64 {
+    mut w := i64(1)
+    mut v := n
+    if v < 0 {
+        w += 1
+        v = -v
+    }
+    for v >= base {
+        v /= base
+        w += 1
+    }
+    return w
+}
+
+func spaces(n i64) !void {
+    for i in 0..n {
+        try io.Print(" ")
+    }
+}
+
+func showbd(p Position) !void {
+    mut i := i64(0)
+    for i < 0x78 {
+        if (i & 0x88) != 0 {
+            try io.Print("\n")
+            i += 8
+        }
+        piece := p.board[i]
+        if piece == 0 {
+            try io.Print(" -- ")
+        } else if piece == WHITE + PAWN {
+            try io.Print(" WP ")
+        } else if piece == WHITE + KING {
+            try io.Print(" WK ")
+        } else if piece == BLACK + PAWN {
+            try io.Print(" BP ")
+        } else if piece == BLACK + KING {
+            try io.Print(" BK ")
+        }
+        i += 1
+    }
+    try io.Print("\n")
+}
+
+func opening() [128]i64 {
+    mut b := [128]i64{}
+    for row in 0..i64(8) {
+        for col in 0..i64(8) {
+            if (row + col) % 2 == 0 {
+                if row < 3 {
+                    b[row * 16 + col] = WHITE + PAWN
+                } else if row > 4 {
+                    b[row * 16 + col] = BLACK + PAWN
+                }
+            }
+        }
+    }
+    return b
+}
+
+func main() !int {
+    blev := i64(7)
+    wlev := i64(8)
+    mut g := Position{plyOfGame: 0, ply: 0, board: opening(), incEval: 0, depth: 0, alpha: 0,
+        beta: 0}
+    mut r := Root{rng: 42, killer: 0, move: 0}
+    mut i := i64(0)
+    for i < 0x78 {
+        if (i & 0x88) != 0 {
+            i += 8
+        }
+        g.incEval += colorEval(g.board[i])
+        i += 1
+    }
+    g.incEval = -g.incEval
+    try io.Print("Starting inc_eval = ")
+    try spaces(8 - width(g.incEval, 10))
+    try io.Printf("{}\n", g.incEval)
+    try showbd(g)
+    mut gameover := false
+    for ply in 0..i64(120) {
+        g.plyOfGame = ply - 1
+        g.ply = 0
+        mut level := blev
+        if (ply & 1) != 0 {
+            level = wlev
+        }
+        mut score := i64(0)
+        for sd in 1..level + 1 {
+            if (score > 1000 || score < -1000) && sd > 1 {
+                continue
+            }
+            g.depth = sd
+            g.alpha = -INF
+            g.beta = INF
+            score = root(g, &r)
+            try spaces(4 - width(sd, 10))
+            try io.Printf("{})   sc: {}", sd, score)
+            try spaces(8 - width(score, 10))
+            try io.Print("  mv=")
+            try spaces(5 - width(r.move, 16))
+            try io.Printf("{x}\n", r.move)
+            if score > 1000 && sd == 1 {
+                gameover = true
+            }
+        }
+        make(&g, r.move)
+        try showbd(g)
+        if gameover {
+            break
+        }
+        g.incEval = -g.incEval
+    }
+    try io.Printf("Options: black search plys = {}\n", blev)
+    try io.Printf("         wite search plys  = {}\n", wlev)
+    return 0
+}

@@ -1,0 +1,226 @@
+// Cilk-5.4.6 examples/bucket.cilk: a bucket sort of n floats in [0, 1), one
+// bucket per element, then a prefix sum over a tree to place the buckets.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: refused. Four procedures spawn. bucket_sort splits the array in
+// halves and each half inserts its elements into the bucket floor(n x), in
+// order, under that bucket's lock; place_elems splits the buckets in halves
+// and each half copies its lists to the places the prefix sum gave them.
+// Both write where the data says: an element goes to any bucket, and a run
+// of buckets fills a run of the output whose ends are sums of counts. No
+// form was found that hands those writes to tasks, so both run in sequence.
+// scan_up and scan_down spawn over the tree of sums. Each node is written by
+// its own task, but the nodes of a binary tree in one array are no
+// partition of it, so the tree is taken a level at a time: every level a
+// parallel loop over its nodes, reading the level below (or above) from a
+// copy, since two levels of one array are the same memory. A level held as
+// its own slice would need no copy, but a function whose loop reads one
+// slice and writes another cannot be handed two slices of one array of
+// slices. The leaves of scan_down write a run of BASE buckets each, which is
+// a partition. The program prints what the C prints and the bits of the
+// sorted array.
+// Args:
+// Answer: ^(Options|sorted bits)
+// Patch: s/^     if \(i != n\)/     { unsigned long long h = 14695981039346656037ULL; unsigned int w; int q; for (q = 0; q < n; q++) { memcpy(&w, &array[q], 4); h = (h ^ w) * 1099511628211ULL; } printf("sorted bits = %llx\\n", h); }\n     if (i != n)/
+
+import "std/io"
+import "std/mem"
+
+const BASE = 10000
+const N = 64000
+
+// glibc's rand() seeded with 1: the additive generator of random_r, TYPE_3.
+func fillRandom(mut r []u32, mut out []f32) {
+    mut word := i64(1)
+    r[0] = 1
+    for i in 1..31 {
+        hi := word / 127773
+        lo := word % 127773
+        word = 16807 * lo - 2836 * hi
+        if word < 0 {
+            word += 2147483647
+        }
+        r[i] = u32(word)
+    }
+    for i in 31..34 {
+        r[i] = r[i - 31]
+    }
+    for i in 34..r.len {
+        r[i] = r[i - 31] +% r[i - 3]
+    }
+    for i in 0..out.len {
+        v := i64(r[i + 344] >> 1)
+        out[i] = f32(v) / f32(2147483648.0)
+    }
+}
+
+// Every element into its bucket, as bucket_sort's leaves do, in the order
+// the serial elision runs them: a list per bucket kept sorted, an element
+// going before the first one not smaller.
+func insertAll(xs []f32, mut head []i64, mut next []i64, mut count []i64) {
+    for b in 0..head.len {
+        head[b] = -1
+        count[b] = 0
+    }
+    n := xs.len
+    for i in 0..n {
+        x := xs[i]
+        idx := i64(f32(n) * x)
+        mut prev := i64(-1)
+        mut cur := head[idx]
+        for cur >= 0 && xs[cur] < x {
+            prev = cur
+            cur = next[cur]
+        }
+        next[i] = cur
+        if prev < 0 {
+            head[idx] = i64(i)
+        } else {
+            next[prev] = i64(i)
+        }
+        count[idx] += 1
+    }
+}
+
+func leafSums(count []i64, mut leaves []i64) {
+    n := count.len
+    parallel for t in 0..leaves.len {
+        l := t * BASE
+        mut r := l + BASE
+        if r > n {
+            r = n
+        }
+        mut s := i64(0)
+        for i in l..r {
+            s += count[i]
+        }
+        leaves[t] = s
+    }
+}
+
+// One level of scan_up: each node the sum of its two children.
+func upLevel(below []i64, mut up []i64) {
+    parallel for k in 0..up.len {
+        up[k] = below[2 * k] + below[2 * k + 1]
+    }
+}
+
+// One level of scan_down: the left child takes its parent's sum, the right
+// one adds the left child's total.
+func downLevel(above []i64, totals []i64, mut sums []i64) {
+    parallel for k in 0..sums.len {
+        if k % 2 == 0 {
+            sums[k] = above[k / 2]
+        } else {
+            sums[k] = above[k / 2] + totals[k - 1]
+        }
+    }
+}
+
+// scan_down's leaves: each a run of BASE buckets.
+func numBefore(count []i64, starts []i64, mut before []i64) {
+    parallel for off, run in before.chunks(BASE) {
+        mut s := starts[off / BASE]
+        for i in 0..run.len {
+            run[i] = s
+            s += count[off + i]
+        }
+    }
+}
+
+func place(xs []f32, head []i64, next []i64, before []i64, mut out []f32) {
+    for b in 0..head.len {
+        mut c := before[b]
+        mut cur := head[b]
+        for cur >= 0 {
+            out[c] = xs[cur]
+            c += 1
+            cur = next[cur]
+        }
+    }
+}
+
+func copyLevel(tree []i64, from i64, mut to []i64) {
+    for k in 0..to.len {
+        to[k] = tree[from + i64(k)]
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    n := i64(N)
+    mut r := mem.Alloc[u32](&heap, u64(n + 344)) orelse return error.OutOfMemory
+    mut xs := mem.Alloc[f32](&heap, u64(n)) orelse return error.OutOfMemory
+    mut sorted := mem.Alloc[f32](&heap, u64(n)) orelse return error.OutOfMemory
+    mut head := mem.Alloc[i64](&heap, u64(n)) orelse return error.OutOfMemory
+    mut next := mem.Alloc[i64](&heap, u64(n)) orelse return error.OutOfMemory
+    mut count := mem.Alloc[i64](&heap, u64(n)) orelse return error.OutOfMemory
+    mut before := mem.Alloc[i64](&heap, u64(n)) orelse return error.OutOfMemory
+    fillRandom(r, xs)
+    insertAll(xs, head, next, count)
+
+    // The tree as INIT_TREE lays it out: the internal nodes, a power of two
+    // less one, then a leaf per BASE buckets, padded here to a full level.
+    leafCount := (n - 1) / BASE + 1
+    mut width := i64(1)
+    mut depth := i64(0)
+    for width < leafCount {
+        width *= 2
+        depth += 1
+    }
+    mut tree := mem.Alloc[i64](&heap, u64(2 * width - 1)) orelse return error.OutOfMemory
+    mut a := mem.Alloc[i64](&heap, u64(width)) orelse return error.OutOfMemory
+    mut b := mem.Alloc[i64](&heap, u64(width)) orelse return error.OutOfMemory
+    mut c := mem.Alloc[i64](&heap, u64(width)) orelse return error.OutOfMemory
+    for k in 0..2 * width - 1 {
+        tree[k] = 0
+    }
+    mut leaves := a[0..leafCount]
+    leafSums(count, leaves)
+    for k in 0..width {
+        mut v := i64(0)
+        if k < leafCount {
+            v = a[k]
+        }
+        tree[width - 1 + k] = v
+    }
+    for step in 0..depth {
+        w := width >> (step + 1)
+        copyLevel(tree, 2 * w - 1, b[0..2 * w])
+        upLevel(b[0..2 * w], a[0..w])
+        for k in 0..w {
+            tree[w - 1 + k] = a[k]
+        }
+    }
+    a[0] = 0
+    for step in 0..depth {
+        w := i64(2) << step
+        copyLevel(tree, w - 1, b[0..w])
+        downLevel(a[0..w / 2], b[0..w], c[0..w])
+        for k in 0..w {
+            a[k] = c[k]
+        }
+    }
+    numBefore(count, a[0..leafCount], before)
+    place(xs, head, next, before, sorted)
+
+    mut ok := true
+    for i in 1..n {
+        if sorted[i] < sorted[i - 1] {
+            ok = false
+        }
+    }
+    mut h := u64(14695981039346656037)
+    for i in 0..n {
+        mut v := sorted[i]
+        w := [*]u32(&v)
+        h = (h ^ u64(w[0])) *% 1099511628211
+    }
+    try io.Printf("sorted bits = {x}\n", h)
+    if !ok {
+        try io.Print("WRONG ANSWER!\n")
+        return 0
+    }
+    try io.Printf("Options: number of elements  n = {}\n", n)
+    return 0
+}

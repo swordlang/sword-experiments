@@ -1,0 +1,277 @@
+// Cilk-5.4.6 examples/plu.cilk: LU decomposition with partial pivoting, on
+// a matrix stored as 16 x 16 blocks, a row of blocks after another.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: rewritten. Every write the C spawns is to whole blocks or to the
+// row of one block, and either is a piece of the matrix cut by chunks: a
+// block is a run of 256 elements, a row of a block a run of 16. So each
+// spawn tree becomes a parallel loop over those pieces, and what the pieces
+// read from the same matrix is copied first, because no task may read
+// memory another piece of it writes. column_max keeps its spawns as they
+// are, since it only reads. update_lower_rows halves its rows down to runs
+// of 16 and spawns them; the port runs one turn per row, with the pivot row
+// copied. schur spawns one task per quadrant of the block it writes, in two
+// phases, and recurses to single blocks; the port runs one turn per block,
+// with the two blocks it reads copied, and each block takes its terms in
+// the order the C's recursion gives it, which is not the same for every
+// quadrant. lower_solve spawns one task per half of the columns; the port
+// solves both halves together, a row of blocks at a time, which changes no
+// block's operations since the columns never read each other. Every element
+// sees the operations of the C in the same order. The program prints what
+// the C prints and the bits of the decomposed matrix, element by element in
+// rows.
+// Args: -n 256
+// Answer: ^(Options|PLU bits)
+// Patch: s/^     printf\("\\nCilk Example: plu\\n"\);/     { unsigned long long h = 14695981039346656037ULL, w; int a, b; for (a = 0; a < N; a++) for (b = 0; b < N; b++) { memcpy(&w, &A(a, b), 8); h = (h ^ w) * 1099511628211ULL; } printf("PLU bits = %llx\\n", h); }\n     printf("\\nCilk Example: plu\\n");/
+
+import "std/io"
+import "std/mem"
+
+const S = 16
+const SS = 256
+const N = 256
+const K = 16
+
+func at(i i64, j i64) i64 {
+    return ((i / S) * K + j / S) * SS + (i % S) * S + j % S
+}
+
+func abs(x f64) f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+func columnMax(a []f64, c i64, r1 i64, r2 i64, mut out *i64) {
+    if r2 - r1 < S {
+        mut max := -1.0
+        mut j := i64(0)
+        for r in r1..r2 + 1 {
+            if abs(a[at(r, c)]) >= max {
+                max = abs(a[at(r, c)])
+                j = r
+            }
+        }
+        *out = j
+        return
+    }
+    r := (r2 + r1) / 2
+    mut j := i64(0)
+    mut k := i64(0)
+    scope {
+        spawn columnMax(a, c, r1, r, &j)
+        spawn columnMax(a, c, r + 1, r2, &k)
+    }
+    if abs(a[at(j, c)]) < abs(a[at(k, c)]) {
+        j = k
+    }
+    *out = j
+}
+
+// update_lower_rows: rows t to b of block column cb, the pivot row ri.
+func updateLowerRows(mut a []f64, ri []f64, cb i64, k i64, t i64, b i64) {
+    parallel for off, row in a.chunks(S) {
+        piece := i64(off) / S
+        blk := piece / S
+        j := (blk / K) * S + piece % S
+        if blk % K == cb && j >= t && j <= b {
+            row[k] = row[k] / ri[k]
+            x := row[k]
+            for l in k + 1..S {
+                row[l] = row[l] - x * ri[l]
+            }
+        }
+    }
+}
+
+func blockLup(mut a []f64, mut p []i64, r i64, c i64, mut ri []f64) {
+    for k in 0..S {
+        i := r + k
+        mut j := i64(0)
+        columnMax(a, c + k, i, N - 1, &j)
+        if i != j {
+            l := p[i]
+            p[i] = p[j]
+            p[j] = l
+            for col in 0..N {
+                t := a[at(i, col)]
+                a[at(i, col)] = a[at(j, col)]
+                a[at(j, col)] = t
+            }
+        }
+        for l in 0..S {
+            ri[l] = a[at(i, c + l)]
+        }
+        updateLowerRows(a, ri, c / S, k, i + 1, N - 1)
+    }
+}
+
+func blockSchur(mut blk []f64, b []f64, c []f64) {
+    for i in 0..S {
+        for k in 0..S {
+            x := b[i * S + k]
+            for j in 0..S {
+                blk[i * S + j] = blk[i * S + j] - c[k * S + j] * x
+            }
+        }
+    }
+}
+
+// The terms schur gives the block in row i and column j of its n x m blocks,
+// in the order it gives them: at each level the quadrant (x, y) first takes
+// the half k = x xor y of the inner dimension, then the other. b holds the
+// blocks of B in rows of bw, c those of C in rows of cw; jc is the block's
+// column in C.
+func schurTerms(mut blk []f64, b []f64, bw i64, c []f64, cw i64, i i64, j i64,
+    jc i64, n i64, m i64, ib i64, kb i64) {
+    if m == 1 {
+        bo := (ib * bw + kb) * SS
+        co := (kb * cw + jc) * SS
+        blockSchur(blk, b[bo..bo + SS], c[co..co + SS])
+        return
+    }
+    hn := n / 2
+    hm := m / 2
+    if i >= 2 * hn {
+        return
+    }
+    mut x := i64(0)
+    if i >= hn {
+        x = 1
+    }
+    mut y := i64(0)
+    if j >= hm {
+        y = 1
+    }
+    first := x ^ y
+    schurTerms(blk, b, bw, c, cw, i - x * hn, j - y * hm, jc, hn, hm, ib, kb + first * hm)
+    schurTerms(blk, b, bw, c, cw, i - x * hn, j - y * hm, jc, hn, hm, ib, kb + (1 - first) * hm)
+}
+
+func copyBlocks(a []f64, r i64, c i64, rows i64, cols i64, mut to []f64) {
+    for bi in 0..rows {
+        for bj in 0..cols {
+            from := ((r + bi) * K + c + bj) * SS
+            o := (bi * cols + bj) * SS
+            for e in 0..SS {
+                to[o + e] = a[from + e]
+            }
+        }
+    }
+}
+
+// schur(ar, ac, br, bc, cr, cc, n, m) for every group of m columns of the
+// w at (ar, ac), in blocks: A -= B C, B n x m at (br, bc), C m x w at
+// (cr, cc).
+func schur(mut a []f64, ar i64, ac i64, br i64, bc i64, cr i64, cc i64, n i64, m i64,
+    w i64, mut b []f64, mut c []f64) {
+    copyBlocks(a, br, bc, n, m, b)
+    copyBlocks(a, cr, cc, m, w, c)
+    bs := b[0..n * m * SS]
+    cs := c[0..m * w * SS]
+    parallel for off, blk in a.chunks(SS) {
+        q := i64(off) / SS
+        i := q / K - ar
+        j := q % K - ac
+        if i >= 0 && i < n && j >= 0 && j < w {
+            schurTerms(blk, bs, m, cs, w, i, j % m, j, n, m, i, 0)
+        }
+    }
+}
+
+func blockLowerSolve(mut blk []f64, l []f64) {
+    for i in 1..S {
+        for k in 0..i {
+            x := l[i * S + k]
+            for j in 0..S {
+                blk[i * S + j] = blk[i * S + j] - blk[k * S + j] * x
+            }
+        }
+    }
+}
+
+// lower_solve on the m x m blocks at (ar, ac) and the w - m columns of
+// blocks after them, all at once.
+func lowerSolve(mut a []f64, lr i64, lc i64, ar i64, ac i64, m i64, w i64, mut b []f64,
+    mut c []f64) {
+    if m == 1 {
+        copyBlocks(a, lr, lc, 1, 1, b)
+        l := b[0..SS]
+        parallel for off, blk in a.chunks(SS) {
+            q := i64(off) / SS
+            j := q % K - ac
+            if q / K == ar && j >= 0 && j < w {
+                blockLowerSolve(blk, l)
+            }
+        }
+        return
+    }
+    h := m / 2
+    lowerSolve(a, lr, lc, ar, ac, h, w, b, c)
+    schur(a, ar + h, ac, lr + h, lc, ar, ac, h, h, w, b, c)
+    lowerSolve(a, lr + h, lc + h, ar + h, ac, h, w, b, c)
+}
+
+// lup(r, c, n, m) in blocks.
+func lup(mut a []f64, mut p []i64, r i64, c i64, n i64, m i64, mut b []f64, mut c2 []f64) {
+    if m == 1 {
+        blockLup(a, p, r * S, c * S, b[0..S])
+        return
+    }
+    h := m / 2
+    lup(a, p, r, c, n, h, b, c2)
+    lowerSolve(a, r, c, r, c + h, h, h, b, c2)
+    schur(a, r + h, c + h, r + h, c, r, c + h, n - h, h, h, b, c2)
+    lup(a, p, r + h, c + h, n - h, h, b, c2)
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut r := mem.Alloc[u32](&heap, u64(N * N + 344)) orelse return error.OutOfMemory
+    mut a := mem.Alloc[f64](&heap, u64(N * N)) orelse return error.OutOfMemory
+    mut p := mem.Alloc[i64](&heap, u64(N)) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, u64(N * N)) orelse return error.OutOfMemory
+    mut c := mem.Alloc[f64](&heap, u64(N * N)) orelse return error.OutOfMemory
+
+    // glibc's rand() seeded with 1: the additive generator of random_r, TYPE_3.
+    mut word := i64(1)
+    r[0] = 1
+    for i in 1..31 {
+        hi := word / 127773
+        lo := word % 127773
+        word = 16807 * lo - 2836 * hi
+        if word < 0 {
+            word += 2147483647
+        }
+        r[i] = u32(word)
+    }
+    for i in 31..34 {
+        r[i] = r[i - 31]
+    }
+    for i in 34..r.len {
+        r[i] = r[i - 31] +% r[i - 3]
+    }
+    for i in 0..N {
+        for j in 0..N {
+            a[at(i, j)] = f64(i64(r[344 + i * N + j] >> 1)) / 2147483647.0
+        }
+    }
+    for i in 0..N {
+        p[i] = i
+    }
+
+    lup(a, p, 0, 0, K, K, b, c)
+
+    mut h := u64(14695981039346656037)
+    for i in 0..N {
+        for j in 0..N {
+            mut v := a[at(i, j)]
+            w := [*]u64(&v)
+            h = (h ^ w[0]) *% 1099511628211
+        }
+    }
+    try io.Printf("PLU bits = {x}\n", h)
+    try io.Printf("Options: (n x n matrix) n = {}\n", N)
+    return 0
+}
