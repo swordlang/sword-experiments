@@ -359,3 +359,20 @@ docker run --rm -v "$PWD/sword.tar:/sword.tar:ro" -v "$PWD:/exp" sword-ci:arm64 
   in sixteen sums per piece, so `sword-plain` in E1 and `sword-plain` and
   `sword-mix` in E2 give other bits than they did, each still one answer
   everywhere.
+- Everything again against Sword 0.4.1 (tag `v0.4.1`, commit `edc5ba8`) is in
+  `results/v0.4.1/`: E1 to E3 (`summary.md`), E4 and E5 (`compare.md`) and
+  the diagnostics (`diagnose.md`), from run 41489842243 on the same three
+  machines. 0.4.1 changes what the race checker and `det` refuse, not the
+  code these programs compile to, and every Sword answer has the bits it had
+  on 0.4.0. Two runs of the others differ: C with OpenMP gave 12 answers in
+  E1 `mixed` and 11 in E2 here, 13 and 13 on 0.4.0. Two new methods:
+  `c-nofma`, the C built with `-ffp-contract=off`, gives `mandelbrot`
+  269 789 451 on all three machines, Sword's answer, at Sword's speed
+  (697.1 / 831.6 / 1048.1 ms at one thread against 692.7 / 838.6 /
+  1109.2 on Linux arm64, x86-64 and macOS); `c-serial` gives 269 789 418
+  on all three. `sword-rows-without-steady` took 0.98 of `sword-rows`' time
+  on both Linux machines, so `steady` shows no gain there; the macOS
+  machine, shared and virtual, moved by 0.75 to 2.18 between builds that
+  differ in pieces its kernels do not use, and says nothing either way. In
+  the diagnostics, Sword's `ticket` without `det` gave one answer in its
+  twenty runs on macOS, and more than one on both Linux machines.

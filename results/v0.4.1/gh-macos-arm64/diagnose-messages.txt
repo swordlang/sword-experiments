@@ -1,0 +1,21 @@
+== pool.sword
+pool.sword:22:5: error: 'spread' is marked det, but what it answers can depend on more than its arguments
+pool.sword:24:5: note: spread lets more than one task at a time receive from channel 'jobs'
+== senders.sword
+senders.sword:22:5: error: 'merged' is marked det, but what it answers can depend on more than its arguments
+senders.sword:25:5: note: merged lets more than one task at a time send on channel 'ch'
+== poll.sword
+poll.sword:26:5: error: 'polled' is marked det, but what it answers can depend on more than its arguments
+poll.sword:31:20: note: polled calls drain, which is not det
+poll.sword:17:27: note: drain asks channel 'ch' something only the timing knows (TryRecv)
+== ticket.sword
+ticket.sword:10:5: error: 'tickets' is marked det, but what it answers can depend on more than its arguments
+ticket.sword:14:23: note: tickets calls draw, which is not det
+ticket.sword:7:26: note: draw reads or writes an atomic
+== clock.sword
+clock.sword:7:5: error: 'refine' is marked det, but what it answers can depend on more than its arguments
+clock.sword:8:22: note: refine calls time.Now, which is not det
+std/time/time.sword:67:39: note: time.Now calls out of the language
+== ccall.sword
+ccall.sword:7:5: error: 'seeded' is marked det, but what it answers can depend on more than its arguments
+ccall.sword:8:24: note: seeded calls out of the language
