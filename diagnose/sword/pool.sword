@@ -1,0 +1,43 @@
+// A pool of workers on one channel: which worker takes which value is the
+// scheduler's choice, and each folds what it got in its own order.
+
+import "std/io"
+import "std/mem"
+
+func work(jobs chan[f64], mut part []f64) {
+    mut s f64 = 0.0
+    for v := <-jobs {
+        s = s * 0.5 + v
+    }
+    part[0] = s
+}
+
+func feed(n u64, jobs chan[f64]) !void {
+    for i in 0..n {
+        try jobs <- f64(i) * 0.1
+    }
+    close(jobs)
+}
+
+det func spread(n u64, mut a mem.Allocator, mut out []f64) !f64 {
+    jobs := try chan[f64](a, 16)
+    scope {
+        spawn feed(n, jobs)
+        for part in out.chunks(1) {
+            spawn work(jobs, part)
+        }
+    }
+    mut t f64 = 0.0
+    for x in out {
+        t = t * 3.0 + x
+    }
+    return t
+}
+
+func main() !int {
+    mut room := [65536]u8{}
+    mut arena := mem.NewArena(room[..])
+    mut out := [4]f64{}
+    try io.Printf("{}\n", try spread(10000, &arena, out[..]))
+    return 0
+}

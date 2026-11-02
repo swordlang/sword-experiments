@@ -117,6 +117,55 @@ its suite that way.
 | `lanes` | a float `reduce(+)` keeps sixteen sums per piece; without it, one chain, so another answer, and still the same one at any thread count |
 | `steady` | a `mut` piece of `xs.chunks(n)` its turn never reassigns or takes the address of counts as a slice that holds still |
 
+**E5 — where the usual way lets the answer depend on the threads**
+(`compare/`, the same programs and runner as E4). Three more kernels, chosen
+because the way each language usually writes them divides the work by the
+number of threads, and that division reaches the answer:
+
+| kernel | what it does | size | where the threads reach the answer |
+|---|---|---|---|
+| `hist` | 64 bins, each sample adding its own value into the bin it falls in | 10⁷ samples | a private histogram per thread, added together at the end |
+| `scan` | the running sum of doubles in [−1, 1) | 10⁷ | the two-pass scan, one block per thread |
+| `sort` | records of a key (1000 values, so many ties) and an id, sorted by key | 10⁶ | an unstable sort per block, so the order among equal keys follows the blocks |
+
+| method | `hist` | `scan` | `sort` |
+|---|---|---|---|
+| `sword` | `parallel for ... reduce(mergeHist: h)` | `par.Scan` | `par.Sort`, stable, so one right answer |
+| `c-serial` | one loop | one loop | `qsort` |
+| `c-omp` | `reduction(+ : h[:64])` | two passes, a block per thread | `qsort` per thread's block, then merges |
+| `cpp-thread` | a histogram per thread | two passes | `std::sort` per block, `std::inplace_merge` |
+| `rust-rayon` | `fold` and `reduce` | two passes over `par_chunks` (rayon has no scan) | `par_sort_unstable_by_key` |
+| `zig-*` | a histogram per thread | two passes | `std.mem.sortUnstable` per block, then merges |
+| `go` | a histogram per goroutine | two passes | `sort.Slice` per block, then merges |
+
+The check of `hist` and `sort` is FNV-1a over the 64 bins' bits or the ids in
+their final order, so that every element counts in its place; `scan` takes the
+sum of its output, as the E4 kernels do. Sword's sort is the only stable one,
+which is what makes its answer unique; a stable sort in C would be one too.
+C does not say whether `qsort` is stable, and C libraries differ, so even
+`c-serial` may give another order on another system. The ablation does not run on these
+kernels.
+
+**The diagnostics table** (`diagnose/`). Six ordinary ways for a program's
+answer to depend on more than its input, each written in Sword, C and Rust:
+
+| program | what reaches the answer |
+|---|---|
+| `pool` | four workers taking values from one channel (a mutex-guarded queue in C, `Arc<Mutex<Receiver>>` in Rust) |
+| `senders` | two producers on one channel, the consumer folding in arrival order |
+| `poll` | a consumer that asks whether a value is there yet (`TryRecv`, `try_recv`) and counts the misses |
+| `ticket` | sixteen tasks drawing tickets from an atomic counter |
+| `clock` | refining until a time budget runs out |
+| `ccall` | a seed from the process id (`getpid` from C in Sword and C, `std::process::id` in Rust) |
+
+The Sword programs say `det` on the function that matters, and the compiler
+refuses each one, with the line and the chain to the cause; the messages are
+kept in `diagnose-messages.txt`. With `det` taken off, the same programs
+compile and run. The C programs are built with `-Wall -Wextra -pedantic` and
+the Rust ones with `-D warnings`. `diagnose/run.sh` runs each twenty times
+and counts the answers (`diagnose.csv`): in every language, the program
+compiles and its answer moves; Sword is the one that says so when asked.
+
 Every other build is for the base of its architecture: x86-64 with SSE2 and
 no AVX, armv8-a. The `-native` builds show what the machine's own vector unit
 changes. Sword has no switch for it, so `compare/run.sh` takes its IR from
@@ -252,3 +301,29 @@ docker run --rm -v "$PWD/sword.tar:/sword.tar:ro" -v "$PWD:/exp" sword-ci:arm64 
   rayon's work stealing cut the sum differently from one round to the next
   from 2 or 4 threads up, and GCC's OpenMP, with and without `-ffast-math`,
   did the same at 8 and 16 threads on both Linux machines, as in E1b.
+- E5 and the diagnostics are in `results/e5/` (tables in `compare.md` and
+  `diagnose.md` there), from run 41361162048 against the same tag, kept apart
+  from E4 because that run's x86-64 machine was an AMD EPYC 9V74, not the
+  7763 E4 had; the run repeats the E4 kernels too. Sword gave one answer for
+  `hist`, `scan` and `sort` over all three machines and every thread count.
+  The other parallel methods gave 5 to 27 answers for `hist`, 4 to 8 for
+  `scan` and 5 to 10 for `sort`, except rayon's sort, which gave one; even
+  `c-serial` gave two answers for `sort`, glibc's `qsort` and Apple's
+  ordering the ties differently. Sword's stable sort is the slow one: 170 to
+  188 ms on one thread, against 41 to 92 ms for `qsort` and 8 to 12 ms for
+  rayon.
+- In the diagnostics, all six Sword programs are refused when the function
+  says `det`, on every machine, with the same messages. Without `det`, every
+  program in every language compiled without a warning and gave more than one
+  answer in its twenty runs on every machine, from 2 (`senders`) to 20.
+- E1 to E3 again against Sword 0.4.0 (tag `v0.4.0`, commit `dbf77e0`) are in
+  `results/v0.4.0/`, tables in `summary.md` there, from run 41358624648 on
+  GitHub's three machines (AMD EPYC 7763, arm64 Neoverse N2, virtual Apple
+  M1). The `bits/` that E3 compares are not kept, as for 0.2.0. Every Sword
+  method gave one answer over the three machines and every thread count, and
+  `std/num` the same bits for every argument on all three, where the C
+  library differed between Linux and macOS at 7 (`log`) to 40 715 (`cos`) of
+  a million. Not every answer is 0.2.0's: since 0.4 a float `reduce(+)` adds
+  in sixteen sums per piece, so `sword-plain` in E1 and `sword-plain` and
+  `sword-mix` in E2 give other bits than they did, each still one answer
+  everywhere.

@@ -1,0 +1,38 @@
+// Two producers on one channel: the values arrive interleaved however the
+// two happened to run, and the consumer folds them in that order.
+
+import "std/io"
+import "std/mem"
+
+func produce(base f64, ch chan[f64]) !void {
+    for i in 0..5000 {
+        try ch <- base + f64(i) * 0.001
+    }
+}
+
+func consume(ch chan[f64], mut into *f64) {
+    mut s f64 = 0.0
+    for k in 0..10000 {
+        v := <-ch orelse 0.0
+        s = s * 0.5 + v
+    }
+    *into = s
+}
+
+det func merged(mut a mem.Allocator) !f64 {
+    ch := try chan[f64](a, 16)
+    mut answer f64 = 0.0
+    scope {
+        spawn produce(1.0, ch)
+        spawn produce(2.0, ch)
+        spawn consume(ch, &answer)
+    }
+    return answer
+}
+
+func main() !int {
+    mut room := [65536]u8{}
+    mut arena := mem.NewArena(room[..])
+    try io.Printf("{}\n", try merged(&arena))
+    return 0
+}

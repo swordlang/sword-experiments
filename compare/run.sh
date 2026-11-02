@@ -1,5 +1,6 @@
 #!/bin/sh
-# compare/run.sh <platform> — the five kernels in every language, into
+# compare/run.sh <platform> — the kernels in every language (the five of E4,
+# then hist, scan and sort of E5), into
 # results/<platform>/compare.csv, with the versions and flags in compare-env.txt.
 #
 # Needs a built Sword compiler (SHIELD), a C and a C++ compiler with OpenMP
@@ -11,7 +12,7 @@ CC=${CC:-cc}
 CXX=${CXX:-c++}
 SHIELD=${SHIELD:-$here/../../sword/shield}
 LANGS=${LANGS:-"sword c cpp rust zig go"}
-KERNELS=${KERNELS:-"sum saxpy stencil mandelbrot nbody"}
+KERNELS=${KERNELS:-"sum saxpy stencil mandelbrot nbody hist scan sort"}
 THREADS=${THREADS:-"1 2 4 8 16"}
 REPS=${REPS:-5}
 ROUNDS=${ROUNDS:-3}
@@ -132,9 +133,13 @@ for round in $(seq 1 "$ROUNDS"); do
         while IFS='|' read -r name bin method; do
             # The lanes variants exist only for sum, the slices one only for
             # the stencil.
+            # The E5 kernels have no restrict variant, and the ablation is
+            # about the checks of the E4 ones.
             case $name:$k in
                 c-lanes*:sum|c-native-lanes*:sum|rust-slices:stencil|sword-rows:stencil) ;;
                 c-lanes*:*|c-native-lanes*:*|rust-slices:*|sword-rows:*) continue ;;
+                c-restrict:hist|c-restrict:scan|c-restrict:sort) continue ;;
+                sword-without-*:hist|sword-without-*:scan|sword-without-*:sort) continue ;;
             esac
             case $name in
                 c-serial|c-restrict|c-lanes|c-fastmath-serial|c-native-serial|c-native-lanes|c-clang-serial) ts=1 ;;
