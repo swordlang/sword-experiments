@@ -347,6 +347,132 @@ static void sort_omp(struct rec *xs, long n, int threads) {
   free(tmp);
 }
 
+// Two stable sorts, both cut the way Sword's par.Sort is: 64 pieces of at
+// least 1024 records whatever the thread count, each sorted on its own, then
+// neighbouring runs merged pairwise, one level at a time. Being stable, they
+// have one right answer, Sword's.
+enum { MaxPieces = 64, MinPiece = 1024, Block = 20 };
+
+static long piece_size(long n) {
+  long size = (n + MaxPieces - 1) / MaxPieces;
+  return size < MinPiece ? MinPiece : size;
+}
+
+// What a C programmer writes: merge sort with a buffer as large as the input.
+static void msort(struct rec *xs, struct rec *tmp, long lo, long hi) {
+  if (hi - lo < 2) return;
+  long mid = lo + (hi - lo) / 2;
+  msort(xs, tmp, lo, mid);
+  msort(xs, tmp, mid, hi);
+  if (xs[mid - 1].key <= xs[mid].key) return;
+  merge_recs(xs, tmp, lo, mid, hi);
+}
+
+// Sword's own algorithm in C, as in std/par: insertion sort on blocks of 20,
+// then in-place merging by rotation (Kim and Kutzner's SymMerge, as in Go's
+// sort.Stable), O(n log² n) moves and no scratch memory.
+static void swap_recs(struct rec *xs, long i, long j) {
+  struct rec t = xs[i];
+  xs[i] = xs[j];
+  xs[j] = t;
+}
+
+static void insertion(struct rec *xs, long a, long b) {
+  for (long i = a + 1; i < b; i++)
+    for (long j = i; j > a && xs[j].key < xs[j - 1].key; j--) swap_recs(xs, j, j - 1);
+}
+
+static void swap_range(struct rec *xs, long a, long b, long n) {
+  for (long i = 0; i < n; i++) swap_recs(xs, a + i, b + i);
+}
+
+static void rotate(struct rec *xs, long a, long m, long b) {
+  long i = m - a, j = b - m;
+  while (i != j) {
+    if (i > j) {
+      swap_range(xs, m - i, m, j);
+      i -= j;
+    } else {
+      swap_range(xs, m - i, m + j - i, i);
+      j -= i;
+    }
+  }
+  swap_range(xs, m - i, m, i);
+}
+
+static void sym_merge(struct rec *xs, long a, long m, long b) {
+  if (m - a == 1) {
+    long i = m, j = b;
+    while (i < j) {
+      long h = (i + j) / 2;
+      if (xs[h].key < xs[a].key) i = h + 1;
+      else j = h;
+    }
+    for (long k = a; k < i - 1; k++) swap_recs(xs, k, k + 1);
+    return;
+  }
+  if (b - m == 1) {
+    long i = a, j = m;
+    while (i < j) {
+      long h = (i + j) / 2;
+      if (!(xs[m].key < xs[h].key)) i = h + 1;
+      else j = h;
+    }
+    for (long k = m; k > i; k--) swap_recs(xs, k, k - 1);
+    return;
+  }
+  long mid = (a + b) / 2, n = mid + m, start = a, r = m;
+  if (m > mid) {
+    start = n - b;
+    r = mid;
+  }
+  long p = n - 1;
+  while (start < r) {
+    long c = (start + r) / 2;
+    if (!(xs[p - c].key < xs[c].key)) start = c + 1;
+    else r = c;
+  }
+  long end = n - start;
+  if (start < m && m < end) rotate(xs, start, m, end);
+  if (a < start && start < mid) sym_merge(xs, a, start, mid);
+  if (mid < end && end < b) sym_merge(xs, mid, end, b);
+}
+
+static void sym_sort(struct rec *xs, long n) {
+  long a = 0, b = Block;
+  for (; b <= n; a = b, b += Block) insertion(xs, a, b);
+  insertion(xs, a, n);
+  for (long width = Block; width < n; width *= 2) {
+    for (a = 0, b = 2 * width; b <= n; a = b, b += 2 * width) sym_merge(xs, a, a + width, b);
+    if (a + width < n) sym_merge(xs, a, a + width, n);
+  }
+}
+
+// inplace picks SymMerge, otherwise the buffered merge sort; omp spreads the
+// pieces of each level over the threads, serial does them in turn.
+static void sort_stable(struct rec *xs, long n, int inplace, int omp) {
+  long size = piece_size(n);
+  long pieces = (n + size - 1) / size;
+  struct rec *tmp = inplace ? NULL : malloc(n * sizeof *tmp);
+#pragma omp parallel for schedule(static) if (omp)
+  for (long p = 0; p < pieces; p++) {
+    long lo = p * size, hi = lo + size < n ? lo + size : n;
+    if (inplace) sym_sort(xs + lo, hi - lo);
+    else msort(xs, tmp, lo, hi);
+  }
+  for (long width = size; width < n; width *= 2) {
+    long pairs = (n + 2 * width - 1) / (2 * width);
+#pragma omp parallel for schedule(static) if (omp)
+    for (long q = 0; q < pairs; q++) {
+      long lo = q * 2 * width, m = lo + width, hi = lo + 2 * width < n ? lo + 2 * width : n;
+      if (m >= hi) continue;
+      if (inplace) sym_merge(xs, lo, m, hi);
+      else merge_recs(xs, tmp, lo, m, hi);
+    }
+  }
+  free(tmp);
+}
+
 // FNV-1a over 64-bit words, the checksum of a sequence where every element
 // counts in its place.
 static uint64_t fnv(uint64_t c, uint64_t w) { return (c ^ w) * 1099511628211ULL; }
@@ -370,7 +496,7 @@ static uint64_t bits(double v) {
 
 int main(int argc, char **argv) {
   if (argc < 4) {
-    fprintf(stderr, "usage: bench sum|saxpy|stencil|mandelbrot|nbody|hist|scan|sort serial|restrict|omp threads [reps]\n");
+    fprintf(stderr, "usage: bench sum|saxpy|stencil|mandelbrot|nbody|hist|scan|sort serial|restrict|omp|lanes|lanes-omp|stable|stable-omp|symmerge|symmerge-omp threads [reps]\n");
     return 2;
   }
   const char *kernel = argv[1], *method = argv[2];
@@ -381,9 +507,14 @@ int main(int argc, char **argv) {
           : !strcmp(method, "omp")       ? 2
           : !strcmp(method, "lanes")     ? 3
           : !strcmp(method, "lanes-omp") ? 4
-                                         : -1;
+          : !strcmp(method, "stable")       ? 5
+          : !strcmp(method, "stable-omp")   ? 6
+          : !strcmp(method, "symmerge")     ? 7
+          : !strcmp(method, "symmerge-omp") ? 8
+                                            : -1;
   int e5 = !strcmp(kernel, "hist") || !strcmp(kernel, "scan") || !strcmp(kernel, "sort");
-  if (m < 0 || (m > 2 && strcmp(kernel, "sum")) || (e5 && m == 1)) {
+  if (m < 0 || (m > 2 && m < 5 && strcmp(kernel, "sum")) || (m > 4 && strcmp(kernel, "sort")) ||
+      (e5 && m == 1)) {
     fprintf(stderr, "unknown method for %s: %s\n", kernel, method);
     return 2;
   }
@@ -489,6 +620,7 @@ int main(int argc, char **argv) {
       for (long i = 0; i < SortN; i++) xs[i] = (struct rec){(uint32_t)(unit(1, i) * SortKeys), (uint32_t)i};
       double t0 = now_ns();
       if (m == 0) sort_serial(xs, SortN);
+      else if (m > 4) sort_stable(xs, SortN, m > 6, m % 2 == 0);
       else sort_omp(xs, SortN, threads);
       times[r] = now_ns() - t0;
     }
