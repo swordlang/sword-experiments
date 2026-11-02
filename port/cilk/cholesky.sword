@@ -1,0 +1,332 @@
+// Cilk-5.4.6 examples/cholesky.cilk: Cholesky factorization of a sparse
+// symmetric matrix held as a quadtree of 4 x 4 blocks.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: rewritten. The C's quadtree is nodes and pointers, a missing
+// subtree a null pointer, and its tasks allocate the blocks that fill in.
+// Here the tree is one array of blocks in Z order, so that every subtree is
+// a run of it and its four quadrants are pieces of chunks, and a block
+// carries a flag saying whether it is in the tree: a subtree is missing
+// when none of its blocks is. Every spawn of the C writes one quadrant, and
+// becomes a spawn on that piece. What a task reads from a quadrant of the
+// same matrix its siblings write is copied first, because two pieces of one
+// slice are the same memory to a task that is not given them: backsub
+// copies the triangle it solves against and the left quadrants schur reads,
+// cholesky the quadrant it multiplies by its own transpose. copy_matrix is
+// a parallel loop over the blocks. Every element sees the operations of the
+// C in the same order. The program prints what the C prints, with the bits
+// of the error in place of its six decimals.
+// Args: -n 1000 -z 10000
+// Answer: ^(Error bits|Options| +(original|input|output))
+// Patch: s/^inline /static inline /
+// Patch: s/printf\("Error: %f\\n\\n", error\);/{ unsigned long long w; memcpy(&w, &error, 8); printf("Error bits = %llx\\n", w); }/
+
+import "std/io"
+import "std/mem"
+import "std/num"
+
+const B = 4
+
+struct Blk {
+    here bool
+    v [16]f64
+}
+
+func present(m []Blk) bool {
+    for i in 0..m.len {
+        if m[i].here {
+            return true
+        }
+    }
+    return false
+}
+
+func schur(mut r *Blk, a *Blk, c *Blk, lower bool) {
+    for i in 0..B {
+        mut top := B
+        if lower {
+            top = i + 1
+        }
+        for j in 0..top {
+            for k in 0..B {
+                r.v[i * B + j] = r.v[i * B + j] - a.v[i * B + k] * c.v[j * B + k]
+            }
+        }
+    }
+}
+
+func blockBacksub(mut b *Blk, u *Blk) {
+    for i in 0..B {
+        for j in 0..B {
+            for k in 0..i {
+                b.v[j * B + i] = b.v[j * B + i] - u.v[i * B + k] * b.v[j * B + k]
+            }
+            b.v[j * B + i] = b.v[j * B + i] / u.v[i * B + i]
+        }
+    }
+}
+
+func blockCholesky(mut b *Blk) {
+    for k in 0..B {
+        x := num.Sqrt(b.v[k * B + k])
+        for i in k..B {
+            b.v[i * B + k] = b.v[i * B + k] / x
+        }
+        for j in k + 1..B {
+            for i in j..B {
+                b.v[i * B + j] = b.v[i * B + j] - b.v[i * B + k] * b.v[j * B + k]
+            }
+        }
+    }
+}
+
+func copyBlocks(from []Blk, mut to []Blk) {
+    for i in 0..from.len {
+        to[i] = from[i]
+    }
+}
+
+// R -= A Transpose(B), only the lower triangle of R when lower holds. B's
+// quadrant k is the transpose of A's: 0, 2, 1, 3.
+func mulAndSubT(lower bool, a []Blk, b []Blk, mut r []Blk) {
+    if r.len == 1 {
+        if !r[0].here {
+            r[0] = Blk{here: true, v: [16]f64{}}
+        }
+        schur(&r[0], &a[0], &b[0], lower)
+        return
+    }
+    q := r.len / 4
+    mut pa := [4]bool{}
+    mut pb := [4]bool{}
+    for k in 0..u64(4) {
+        pa[k] = present(a[k * q..(k + 1) * q])
+        pb[k] = present(b[k * q..(k + 1) * q])
+    }
+    // Per phase and quadrant of R: the quadrants of A and B, and whether
+    // the product is taken only below the diagonal.
+    aOf := [2][4]u64{[4]u64{0, 0, 2, 2}, [4]u64{1, 1, 3, 3}}
+    bOf := [2][4]u64{[4]u64{0, 2, 0, 2}, [4]u64{1, 3, 1, 3}}
+    for phase in 0..2 {
+        scope {
+            for off, part in r.chunks(q) {
+                t := off / q
+                ai := aOf[phase][t]
+                bi := bOf[phase][t]
+                lw := lower && (t == 0 || t == 3)
+                if pa[ai] && pb[bi] && !(lower && t == 1) {
+                    spawn mulAndSubT(lw, a[ai * q..(ai + 1) * q], b[bi * q..(bi + 1) * q], part)
+                }
+            }
+        }
+    }
+}
+
+// B L = A for B, in place of A.
+func backsub(mut a []Blk, l []Blk, fails *atomic[i64]) {
+    if a.len == 1 {
+        blockBacksub(&a[0], &l[0])
+        return
+    }
+    q := a.len / 4
+    l00 := l[0..q]
+    l10 := l[2 * q..3 * q]
+    l11 := l[3 * q..]
+    p00 := present(a[0..q])
+    p10 := present(a[2 * q..3 * q])
+    scope {
+        for off, part in a.chunks(q) {
+            if (off == 0 && p00) || (off == 2 * q && p10) {
+                spawn backsub(part, l00, fails)
+            }
+        }
+    }
+    mut heap := mem.NewSystem()
+    mut c00 := mem.Alloc[Blk](&heap, q) orelse { fails.Add(1); return }
+    mut c10 := mem.Alloc[Blk](&heap, q) orelse { fails.Add(1); return }
+    copyBlocks(a[0..q], c00)
+    copyBlocks(a[2 * q..3 * q], c10)
+    pl10 := present(l10)
+    scope {
+        for off, part in a.chunks(q) {
+            if off == q && p00 && pl10 {
+                spawn mulAndSubT(false, c00, l10, part)
+            } else if off == 3 * q && p10 && pl10 {
+                spawn mulAndSubT(false, c10, l10, part)
+            }
+        }
+    }
+    mem.Free[Blk](&heap, c00)
+    mem.Free[Blk](&heap, c10)
+    p01 := present(a[q..2 * q])
+    p11 := present(a[3 * q..])
+    scope {
+        for off, part in a.chunks(q) {
+            if (off == q && p01) || (off == 3 * q && p11) {
+                spawn backsub(part, l11, fails)
+            }
+        }
+    }
+}
+
+func cholesky(mut a []Blk, fails *atomic[i64]) {
+    if a.len == 1 {
+        blockCholesky(&a[0])
+        return
+    }
+    q := a.len / 4
+    if !present(a[2 * q..3 * q]) {
+        scope {
+            for off, part in a.chunks(q) {
+                if off == 0 || off == 3 * q {
+                    spawn cholesky(part, fails)
+                }
+            }
+        }
+        return
+    }
+    mut heap := mem.NewSystem()
+    mut c := mem.Alloc[Blk](&heap, q) orelse { fails.Add(1); return }
+    cholesky(a[0..q], fails)
+    copyBlocks(a[0..q], c)
+    backsub(a[2 * q..3 * q], c, fails)
+    copyBlocks(a[2 * q..3 * q], c)
+    mulAndSubT(true, c, c, a[3 * q..])
+    cholesky(a[3 * q..], fails)
+    mem.Free[Blk](&heap, c)
+}
+
+func copyMatrix(from []Blk, mut to []Blk) {
+    parallel for off, blk in to.chunks(1) {
+        blk[0] = from[off]
+    }
+}
+
+func mag(m []Blk) f64 {
+    mut res := 0.0
+    if m.len == 1 {
+        if m[0].here {
+            for i in 0..16 {
+                res += m[0].v[i] * m[0].v[i]
+            }
+        }
+        return res
+    }
+    q := m.len / 4
+    for k in 0..u64(4) {
+        res += mag(m[k * q..(k + 1) * q])
+    }
+    return res
+}
+
+func countBlocks(m []Blk) i64 {
+    mut n := i64(0)
+    for i in 0..m.len {
+        if m[i].here {
+            n += 1
+        }
+    }
+    return n
+}
+
+func countNonzeros(m []Blk) i64 {
+    mut n := i64(0)
+    for i in 0..m.len {
+        if m[i].here {
+            for e in 0..16 {
+                if m[i].v[e] != 0.0 {
+                    n += 1
+                }
+            }
+        }
+    }
+    return n
+}
+
+// Where element (r, c) lives: its block's place in Z order, a row bit above
+// a column bit at each level.
+func zindex(r i64, c i64, levels i64) i64 {
+    br := r / B
+    bc := c / B
+    mut z := i64(0)
+    for bit in 0..levels {
+        z = z | (((bc >> bit) & 1) << (2 * bit)) | (((br >> bit) & 1) << (2 * bit + 1))
+    }
+    return z
+}
+
+func get(m []Blk, r i64, c i64, levels i64) f64 {
+    z := zindex(r, c, levels)
+    if !m[z].here {
+        return 0.0
+    }
+    return m[z].v[(r % B) * B + c % B]
+}
+
+func set(mut m []Blk, r i64, c i64, levels i64, value f64) {
+    z := zindex(r, c, levels)
+    if !m[z].here {
+        m[z] = Blk{here: true, v: [16]f64{}}
+    }
+    m[z].v[(r % B) * B + c % B] = value
+}
+
+func main() !int {
+    size := i64(1000)
+    nonzeros := i64(10000)
+    mut depth := i64(0)
+    for (i64(1) << depth) < size {
+        depth += 1
+    }
+    levels := depth - 2
+    nblocks := u64(1) << u64(2 * levels)
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[Blk](&heap, nblocks) orelse return error.OutOfMemory
+    mut r := mem.Alloc[Blk](&heap, nblocks) orelse return error.OutOfMemory
+    for i in 0..nblocks {
+        a[i] = Blk{here: false, v: [16]f64{}}
+    }
+    for i in 0..size {
+        set(a, i, i, levels, 1.0)
+    }
+    // Cilk_rand from rand.cilk, never seeded; RAND_MAX is glibc's.
+    mut nxt := u64(0)
+    for i in 0..nonzeros - size {
+        mut row := i64(0)
+        mut col := i64(0)
+        for {
+            nxt = nxt *% 1103515245 +% 12345
+            row = i64((nxt >> 16) % 2147483648) % size
+            nxt = nxt *% 1103515245 +% 12345
+            col = i64((nxt >> 16) % 2147483648) % size
+            if row > col && get(a, row, col, levels) == 0.0 {
+                break
+            }
+        }
+        set(a, row, col, levels, 0.1)
+    }
+    for i in size..(i64(1) << depth) {
+        set(a, i, i, levels, 1.0)
+    }
+    copyMatrix(a, r)
+    inputBlocks := countBlocks(r)
+    inputNonzeros := countNonzeros(r)
+    mut fails := atomic[i64](0)
+    cholesky(r, &fails)
+    if fails.Load() > 0 {
+        return error.OutOfMemory
+    }
+    outputBlocks := countBlocks(r)
+    outputNonzeros := countNonzeros(r)
+    mulAndSubT(true, r, r, a)
+    mut e := mag(a)
+    eb := [*]u64(&e)
+    try io.Printf("Error bits = {x}\n", eb[0])
+    try io.Printf("Options: original size     = {}\n", size)
+    try io.Printf("         original nonzeros = {}\n", nonzeros)
+    try io.Printf("         input nonzeros    = {}\n", inputNonzeros)
+    try io.Printf("         input blocks      = {}\n", inputBlocks)
+    try io.Printf("         output nonzeros   = {}\n", outputNonzeros)
+    try io.Printf("         output blocks     = {}\n", outputBlocks)
+    return 0
+}

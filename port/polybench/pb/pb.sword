@@ -1,0 +1,56 @@
+package pb
+
+import "std/io"
+
+// The bits of every element, one a line in hex, after a line naming the
+// array: what compare.py reads against PolyBench's own dump.
+func Dump(name string, xs []f64) !void {
+    try io.Printf("== {}\n", name)
+    for x in xs {
+        mut v := x
+        p := [*]u64(&v)
+        try io.Printf("{x}\n", p[0])
+    }
+}
+
+// The lower triangle of an n x n array, row by row, as PolyBench dumps a
+// matrix whose upper part is not part of the answer.
+func DumpLower(name string, xs []f64, n i64) !void {
+    try io.Printf("== {}\n", name)
+    for i in 0..n {
+        for j in 0..i + 1 {
+            mut v := xs[i * n + j]
+            p := [*]u64(&v)
+            try io.Printf("{x}\n", p[0])
+        }
+    }
+}
+
+// An array of integers, written as decimals after a line that says so.
+func DumpInts(name string, xs []i64) !void {
+    try io.Printf("== {} ints\n", name)
+    for x in xs {
+        try io.Printf("{}\n", x)
+    }
+}
+
+// The upper triangle of an n x n array of integers, row by row.
+func DumpUpperInts(name string, xs []i64, n i64) !void {
+    try io.Printf("== {} ints\n", name)
+    for i in 0..n {
+        for j in i..n {
+            try io.Printf("{}\n", xs[i * n + j])
+        }
+    }
+}
+
+// An array of f32, each widened to f64 first, which is exact and what C does
+// to a float it hands to printf.
+func Dump32(name string, xs []f32) !void {
+    try io.Printf("== {}\n", name)
+    for x in xs {
+        mut v := f64(x)
+        p := [*]u64(&v)
+        try io.Printf("{x}\n", p[0])
+    }
+}

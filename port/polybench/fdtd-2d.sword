@@ -1,0 +1,70 @@
+// PolyBench/C 4.2.1 fdtd-2d, SMALL_DATASET: a two-dimensional finite
+// difference time domain step for the fields ex, ey and hz.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The t loop carries all three fields. The j loop setting
+// the first row of ey writes only ey[j], as is; each of the other three i
+// loops writes row i of one field and reads the others, so the rows are the
+// pieces of chunks(NY).
+
+import "std/mem"
+import "pb"
+
+const TMAX = 40
+const NX = 60
+const NY = 80
+
+func kernel(mut ex []f64, mut ey []f64, mut hz []f64, fict []f64) {
+    for t in 0..TMAX {
+        parallel for j in 0..u64(NY) {
+            ey[j] = fict[t]
+        }
+        parallel for off, row in ey.chunks(NY) {
+            i := i64(off) / NY
+            if i == 0 {
+                continue
+            }
+            for j in 0..NY {
+                row[j] = row[j] - 0.5 * (hz[i * NY + j] - hz[(i - 1) * NY + j])
+            }
+        }
+        parallel for off, row in ex.chunks(NY) {
+            i := i64(off) / NY
+            for j in 1..NY {
+                row[j] = row[j] - 0.5 * (hz[i * NY + j] - hz[i * NY + j - 1])
+            }
+        }
+        parallel for off, row in hz.chunks(NY) {
+            i := i64(off) / NY
+            if i == NX - 1 {
+                continue
+            }
+            for j in 0..NY - 1 {
+                row[j] = row[j] - 0.7 * (ex[i * NY + j + 1] - ex[i * NY + j] + ey[(i + 1) * NY + j] - ey[i * NY + j])
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut ex := mem.Alloc[f64](&heap, NX * NY) orelse return error.OutOfMemory
+    mut ey := mem.Alloc[f64](&heap, NX * NY) orelse return error.OutOfMemory
+    mut hz := mem.Alloc[f64](&heap, NX * NY) orelse return error.OutOfMemory
+    mut fict := mem.Alloc[f64](&heap, TMAX) orelse return error.OutOfMemory
+    for i in 0..TMAX {
+        fict[i] = f64(i)
+    }
+    for i in 0..NX {
+        for j in 0..NY {
+            ex[i * NY + j] = (f64(i) * f64(j + 1)) / f64(NX)
+            ey[i * NY + j] = (f64(i) * f64(j + 2)) / f64(NY)
+            hz[i * NY + j] = (f64(i) * f64(j + 3)) / f64(NX)
+        }
+    }
+    kernel(ex, ey, hz, fict)
+    try pb.Dump("ex", ex)
+    try pb.Dump("ey", ey)
+    try pb.Dump("hz", hz)
+    return 0
+}

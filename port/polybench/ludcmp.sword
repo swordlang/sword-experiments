@@ -1,0 +1,106 @@
+// PolyBench/C 4.2.1 ludcmp, SMALL_DATASET: A x = b by LU, then forward and
+// back substitution.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The factorisation is lu's, and its second j loop is
+// parallel: it is worked on in a temporary of N elements and copied back, as
+// in lu. Both substitutions read every element solved before, and their j
+// loops are sums.
+
+import "std/mem"
+import "pb"
+
+const N = 120
+
+// PolyBench's own start: a lower triangular matrix, then A := A A^T so
+// that it is positive semi-definite.
+func start(mut heap mem.Allocator, mut a []f64) !void {
+    for i in 0..N {
+        for j in 0..i + 1 {
+            a[i * N + j] = f64(-j % N) / f64(N) + 1.0
+        }
+        for j in i + 1..N {
+            a[i * N + j] = 0.0
+        }
+        a[i * N + i] = 1.0
+    }
+    mut b := mem.Alloc[f64](heap, N * N) orelse return error.OutOfMemory
+    defer mem.Free[f64](heap, b)
+    for i in 0..b.len {
+        b[i] = 0.0
+    }
+    for t in 0..N {
+        for r in 0..N {
+            for s in 0..N {
+                b[r * N + s] += a[r * N + t] * a[s * N + t]
+            }
+        }
+    }
+    for i in 0..b.len {
+        a[i] = b[i]
+    }
+}
+
+func kernel(mut a []f64, mut cur []f64, b []f64, mut x []f64, mut y []f64) {
+    for i in 0..N {
+        for j in 0..i {
+            mut w := a[i * N + j]
+            for k in 0..j {
+                w -= a[i * N + k] * a[k * N + j]
+            }
+            a[i * N + j] = w / a[j * N + j]
+        }
+        for j in 0..N {
+            cur[j] = a[i * N + j]
+        }
+        tail(i, a, cur)
+        for j in i..N {
+            a[i * N + j] = cur[j]
+        }
+    }
+    for i in 0..N {
+        mut w := b[i]
+        for j in 0..i {
+            w -= a[i * N + j] * y[j]
+        }
+        y[i] = w
+    }
+    mut i := N - 1
+    for i >= 0 {
+        mut w := y[i]
+        for j in i + 1..N {
+            w -= a[i * N + j] * x[j]
+        }
+        x[i] = w / a[i * N + i]
+        i -= 1
+    }
+}
+
+func tail(i i64, a []f64, mut cur []f64) {
+    parallel for j in u64(i)..cur.len {
+        mut w := cur[j]
+        for k in 0..i {
+            w -= a[i * N + k] * a[k * N + i64(j)]
+        }
+        cur[j] = w
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut cur := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut x := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut y := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    fn := f64(N)
+    for i in 0..N {
+        x[i] = 0.0
+        y[i] = 0.0
+        b[i] = f64(i + 1) / fn / 2.0 + 4.0
+    }
+    try start(&heap, a)
+    kernel(a, cur, b, x, y)
+    try pb.Dump("x", x)
+    return 0
+}

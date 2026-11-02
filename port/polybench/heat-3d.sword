@@ -1,0 +1,56 @@
+// PolyBench/C 4.2.1 heat-3d, SMALL_DATASET: a seven-point stencil in three
+// dimensions, A and B in turn.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The t loop carries A and B; each i loop writes plane i of
+// one array and reads the other, so the planes are the pieces of
+// chunks(N*N), the two on the border skipped.
+
+import "std/mem"
+import "pb"
+
+const TSTEPS = 40
+const N = 20
+
+func sweep(mut dst []f64, s []f64) {
+    parallel for off, plane in dst.chunks(N * N) {
+        i := i64(off) / (N * N)
+        if i == 0 || i == N - 1 {
+            continue
+        }
+        for j in 1..N - 1 {
+            for k in 1..N - 1 {
+                c := (i * N + j) * N + k
+                plane[j * N + k] = 0.125 * (s[c + N * N] - 2.0 * s[c] + s[c - N * N]) +
+                    0.125 * (s[c + N] - 2.0 * s[c] + s[c - N]) +
+                    0.125 * (s[c + 1] - 2.0 * s[c] + s[c - 1]) +
+                    s[c]
+            }
+        }
+    }
+}
+
+func kernel(mut a []f64, mut b []f64) {
+    for t in 1..TSTEPS + 1 {
+        sweep(b, a)
+        sweep(a, b)
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, N * N * N) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, N * N * N) orelse return error.OutOfMemory
+    for i in 0..N {
+        for j in 0..N {
+            for k in 0..N {
+                v := f64(i + j + (N - k)) * 10.0 / f64(N)
+                a[(i * N + j) * N + k] = v
+                b[(i * N + j) * N + k] = v
+            }
+        }
+    }
+    kernel(a, b)
+    try pb.Dump("A", a)
+    return 0
+}

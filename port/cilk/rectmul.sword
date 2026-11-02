@@ -1,0 +1,187 @@
+// Cilk-5.4.6 examples/rectmul.cilk: R = A B for rectangular matrices of
+// 16 x 16 blocks, halving the largest of the three dimensions.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: rewritten. init_matrix and multiply_matrix halve a matrix of
+// blocks, by rows or by columns, and spawn a task per half; a half of the
+// columns is not one run of the matrix, but every half is a set of whole
+// blocks, and a block is a piece of the matrix cut by chunks. So each spawn
+// tree becomes a parallel loop with one turn per block of the matrix it
+// writes, and in multiply_matrix each block walks the recursion to find its
+// products, in the C's order. When the halved dimension is the inner one,
+// the two halves add into the same blocks of R: Cilk runs them one after the
+// other when the first has finished (SYNCHED), into a temporary added in
+// afterwards when it has not. The serial elision always takes the first, and
+// so does the port, a block at a time. A loop over pieces takes no
+// reduction, so the flops multiply_matrix returns are counted by a second
+// walk of the recursion. check_matrix only reads, and keeps its spawns, with
+// the halves chosen before the scope: the same two spawns written in both
+// arms of an if are refused, as two writes of each result, though only one
+// arm runs. Every element of A and B is 1, so every order of the additions
+// gives the same bits; the port keeps the C's anyway. The program prints
+// what the C prints, less the rate, and the bits of R and the flop count.
+// Args: -x 512 -y 256 -z 384 -c
+// Answer: ^(Options|         [yz] =|R bits|WRONG)
+// Patch: s/^  if \(check\)$/  { unsigned long long h = 14695981039346656037ULL, w; long q; for (q = 0; q < x * z * BLOCK_SIZE; q++) { memcpy(&w, &((double *) R)[q], 8); h = (h ^ w) * 1099511628211ULL; } printf("R bits = %llx, flops = %lld\\n", h, flops); }\n  if (check)/
+
+import "std/io"
+import "std/mem"
+
+const E = 16
+const BS = 256
+
+// R = A B or R += A B on one block: every element its sum over k in order,
+// starting from R or from the first product.
+func block(mut r []f64, a []f64, b []f64, add bool) {
+    for i in 0..E {
+        for j in 0..E {
+            mut s := 0.0
+            mut k0 := i64(0)
+            if add {
+                s = r[i * E + j]
+            } else {
+                s = a[i * E] * b[j]
+                k0 = 1
+            }
+            for k in k0..E {
+                s = s + a[i * E + k] * b[k * E + j]
+            }
+            r[i * E + j] = s
+        }
+    }
+}
+
+// The products multiply_matrix gives the block in row i and column j of
+// its x x z blocks of R, in its order. ai, ak and bj are where A's row, the
+// inner index and B's column start.
+func products(mut r []f64, a []f64, oa i64, b []f64, ob i64, x i64, y i64, z i64, i i64,
+    j i64, ai i64, ak i64, bj i64, add bool) {
+    if x + y + z == 3 {
+        ao := (ai * oa + ak) * BS
+        bo := (ak * ob + bj) * BS
+        block(r, a[ao..ao + BS], b[bo..bo + BS], add)
+        return
+    }
+    if x >= y && x >= z {
+        h := x / 2
+        if i < h {
+            products(r, a, oa, b, ob, h, y, z, i, j, ai, ak, bj, add)
+            return
+        }
+        products(r, a, oa, b, ob, (x + 1) / 2, y, z, i - h, j, ai + h, ak, bj, add)
+        return
+    }
+    if y > x && y > z {
+        h := y / 2
+        products(r, a, oa, b, ob, x, (y + 1) / 2, z, i, j, ai, ak + h, bj, add)
+        products(r, a, oa, b, ob, x, h, z, i, j, ai, ak, bj, true)
+        return
+    }
+    h := z / 2
+    if j < h {
+        products(r, a, oa, b, ob, x, y, h, i, j, ai, ak, bj, add)
+        return
+    }
+    products(r, a, oa, b, ob, x, y, (z + 1) / 2, i, j - h, ai, ak, bj + h, add)
+}
+
+func multiply(a []f64, b []f64, mut r []f64, x i64, y i64, z i64) {
+    parallel for off, blk in r.chunks(BS) {
+        q := i64(off) / BS
+        products(blk, a, y, b, z, x, y, z, q / z, q % z, 0, 0, 0, false)
+    }
+}
+
+// The flops multiply_matrix counts, which a loop over pieces cannot sum.
+func flopsOf(x i64, y i64, z i64, add bool) i64 {
+    if x + y + z == 3 {
+        if add {
+            return 8192
+        }
+        return 7936
+    }
+    if x >= y && x >= z {
+        return flopsOf(x / 2, y, z, add) + flopsOf((x + 1) / 2, y, z, add)
+    }
+    if y > x && y > z {
+        return flopsOf(x, (y + 1) / 2, z, add) + flopsOf(x, y / 2, z, true)
+    }
+    return flopsOf(x, y, z / 2, add) + flopsOf(x, y, (z + 1) / 2, add)
+}
+
+func initMatrix(mut m []f64, v f64) {
+    parallel for off, blk in m.chunks(BS) {
+        for e in 0..blk.len {
+            blk[e] = v
+        }
+    }
+}
+
+func checkBlock(r []f64, o i64, v f64) i64 {
+    for e in 0..BS {
+        if r[o + e] != v {
+            return 1
+        }
+    }
+    return 0
+}
+
+// check_matrix on the x x y blocks starting at block s, rows o blocks apart.
+func checkMatrix(r []f64, s i64, x i64, y i64, o i64, v f64, mut out *i64) {
+    if x * y == 1 {
+        *out = checkBlock(r, s * BS, v)
+        return
+    }
+    mut a := i64(0)
+    mut b := i64(0)
+    mut x1 := x
+    mut y1 := y / 2
+    mut x2 := x
+    mut y2 := (y + 1) / 2
+    mut s2 := s + y / 2
+    if x > y {
+        x1 = x / 2
+        y1 = y
+        x2 = (x + 1) / 2
+        y2 = y
+        s2 = s + (x / 2) * o
+    }
+    scope {
+        spawn checkMatrix(r, s, x1, y1, o, v, &a)
+        spawn checkMatrix(r, s2, x2, y2, o, v, &b)
+    }
+    *out = a + b
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    x := i64(512 / E)
+    y := i64(256 / E)
+    z := i64(384 / E)
+    mut a := mem.Alloc[f64](&heap, u64(x * y * BS)) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, u64(y * z * BS)) orelse return error.OutOfMemory
+    mut r := mem.Alloc[f64](&heap, u64(x * z * BS)) orelse return error.OutOfMemory
+    initMatrix(a, 1.0)
+    initMatrix(b, 1.0)
+    initMatrix(r, 0.0)
+    multiply(a, b, r, x, y, z)
+    flops := flopsOf(x, y, z, false)
+    mut wrong := i64(0)
+    checkMatrix(r, 0, x, z, z, f64(y * 16), &wrong)
+
+    mut h := u64(14695981039346656037)
+    for q in 0..r.len {
+        mut v := r[q]
+        w := [*]u64(&v)
+        h = (h ^ w[0]) *% 1099511628211
+    }
+    try io.Printf("R bits = {x}, flops = {}\n", h, flops)
+    if wrong != 0 {
+        try io.Print("WRONG RESULT!\n")
+        return 0
+    }
+    try io.Printf("Options: x = {}\n", E * x)
+    try io.Printf("         y = {}\n", E * y)
+    try io.Printf("         z = {}\n", E * z)
+    return 0
+}

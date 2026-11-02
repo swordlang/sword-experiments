@@ -1,0 +1,62 @@
+// PolyBench/C 4.2.1 3mm, SMALL_DATASET: G := (A*B)*(C*D).
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. Each i of the three nests writes one row, so the rows are
+// the pieces of E, F and G cut by their width.
+
+import "std/mem"
+import "pb"
+
+const NI = 40
+const NJ = 50
+const NK = 60
+const NL = 70
+const NM = 80
+
+func product(rows i64, inner i64, cols i64, x []f64, y []f64, mut out []f64) {
+    parallel for off, row in out.chunks(u64(cols)) {
+        i := i64(off) / cols
+        for j in 0..cols {
+            row[j] = 0.0
+            for k in 0..inner {
+                row[j] += x[i * inner + k] * y[k * cols + j]
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, NI * NK) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, NK * NJ) orelse return error.OutOfMemory
+    mut c := mem.Alloc[f64](&heap, NJ * NM) orelse return error.OutOfMemory
+    mut d := mem.Alloc[f64](&heap, NM * NL) orelse return error.OutOfMemory
+    mut e := mem.Alloc[f64](&heap, NI * NJ) orelse return error.OutOfMemory
+    mut f := mem.Alloc[f64](&heap, NJ * NL) orelse return error.OutOfMemory
+    mut g := mem.Alloc[f64](&heap, NI * NL) orelse return error.OutOfMemory
+    for i in 0..NI {
+        for j in 0..NK {
+            a[i * NK + j] = f64((i * j + 1) % NI) / f64(5 * NI)
+        }
+    }
+    for i in 0..NK {
+        for j in 0..NJ {
+            b[i * NJ + j] = f64((i * (j + 1) + 2) % NJ) / f64(5 * NJ)
+        }
+    }
+    for i in 0..NJ {
+        for j in 0..NM {
+            c[i * NM + j] = f64(i * (j + 3) % NL) / f64(5 * NL)
+        }
+    }
+    for i in 0..NM {
+        for j in 0..NL {
+            d[i * NL + j] = f64((i * (j + 2) + 2) % NK) / f64(5 * NK)
+        }
+    }
+    product(NI, NK, NJ, a, b, e)
+    product(NJ, NM, NL, c, d, f)
+    product(NI, NJ, NL, e, f, g)
+    try pb.Dump("G", g)
+    return 0
+}

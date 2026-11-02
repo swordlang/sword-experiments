@@ -1,0 +1,64 @@
+// PolyBench/C 4.2.1 cholesky, SMALL_DATASET: A := L, with L L^T = A.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: sequential. Row i reads the rows above it, and within a row each
+// A[i][j] reads the ones before it; the k loops are sums.
+
+import "std/mem"
+import "std/num"
+import "pb"
+
+const N = 120
+
+// PolyBench's own start: a lower triangular matrix, then A := A A^T so
+// that it is positive semi-definite.
+func start(mut heap mem.Allocator, mut a []f64) !void {
+    for i in 0..N {
+        for j in 0..i + 1 {
+            a[i * N + j] = f64(-j % N) / f64(N) + 1.0
+        }
+        for j in i + 1..N {
+            a[i * N + j] = 0.0
+        }
+        a[i * N + i] = 1.0
+    }
+    mut b := mem.Alloc[f64](heap, N * N) orelse return error.OutOfMemory
+    defer mem.Free[f64](heap, b)
+    for i in 0..b.len {
+        b[i] = 0.0
+    }
+    for t in 0..N {
+        for r in 0..N {
+            for s in 0..N {
+                b[r * N + s] += a[r * N + t] * a[s * N + t]
+            }
+        }
+    }
+    for i in 0..b.len {
+        a[i] = b[i]
+    }
+}
+
+func kernel(mut a []f64) {
+    for i in 0..N {
+        for j in 0..i {
+            for k in 0..j {
+                a[i * N + j] -= a[i * N + k] * a[j * N + k]
+            }
+            a[i * N + j] /= a[j * N + j]
+        }
+        for k in 0..i {
+            a[i * N + i] -= a[i * N + k] * a[i * N + k]
+        }
+        a[i * N + i] = num.Sqrt(a[i * N + i])
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    try start(&heap, a)
+    kernel(a)
+    try pb.DumpLower("A", a, N)
+    return 0
+}

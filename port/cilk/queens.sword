@@ -1,0 +1,84 @@
+// Cilk-5.4.6 examples/queens.cilk: one placement of n queens on an n x n
+// board that no two attack, by a search with a spawn per square tried.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: rewritten. Each square that keeps the board legal is a spawn, as
+// in Cilk. The inlet that keeps the first answer to come back has no Sword
+// form: each child writes into a slot of its own, a piece of chunks(1), and
+// the parent reads the slots after the scope. The Cilk program also aborts
+// its other children once one answers, and so returns whichever answer came
+// first; Sword cannot stop them, so this searches every branch and returns
+// the first in the order the squares are tried, which is what the serial
+// elision returns.
+// Args: 12
+// Answer: ^result:
+
+import "std/io"
+
+const MAXN = 16
+
+struct Answer {
+    found bool
+    q [16]i64
+}
+
+func ok(n i64, a [16]i64) bool {
+    for i in 0..n {
+        p := a[i]
+        for j in i + 1..n {
+            q := a[j]
+            if q == p || q == p - (j - i) || q == p + (j - i) {
+                return false
+            }
+        }
+    }
+    return true
+}
+
+func nqueens(n i64, j i64, a [16]i64, mut out []Answer) {
+    if n == j {
+        out[0].found = true
+        out[0].q = a
+        return
+    }
+    mut all := [16]Answer{}
+    mut tries := all[0..u64(n)]
+    scope {
+        for off, slot in tries.chunks(1) {
+            mut b := a
+            b[j] = i64(off)
+            if ok(j + 1, b) {
+                spawn nqueens(n, j + 1, b, slot)
+            }
+        }
+    }
+    for i in 0..n {
+        if tries[i].found {
+            out[0] = tries[i]
+            return
+        }
+    }
+}
+
+func main() !int {
+    n := 12
+    mut answer := [1]Answer{}
+    nqueens(n, 0, [16]i64{}, answer[..])
+    if answer[0].found {
+        if !ok(n, answer[0].q) {
+            try io.Printf("RESULT IS BAD!!!\n")
+        }
+        try io.Printf("result: ")
+        for i in 0..n {
+            v := answer[0].q[i]
+            if v < 10 {
+                try io.Printf(" ")
+            }
+            try io.Printf("{} ", v)
+        }
+        try io.Printf("\n")
+    } else {
+        try io.Printf("no possible result!\n")
+    }
+    return 0
+}

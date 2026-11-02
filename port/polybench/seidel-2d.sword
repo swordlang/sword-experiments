@@ -1,0 +1,38 @@
+// PolyBench/C 4.2.1 seidel-2d, SMALL_DATASET: a nine-point Gauss-Seidel
+// stencil, in place.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: sequential. Every loop reads what earlier iterations of it wrote;
+// the parallelism is along wavefronts, which the loops as written do not
+// have.
+
+import "std/mem"
+import "pb"
+
+const TSTEPS = 40
+const N = 120
+
+func kernel(mut a []f64) {
+    for t in 0..TSTEPS {
+        for i in 1..N - 1 {
+            for j in 1..N - 1 {
+                a[i * N + j] = (a[(i - 1) * N + j - 1] + a[(i - 1) * N + j] + a[(i - 1) * N + j + 1] +
+                    a[i * N + j - 1] + a[i * N + j] + a[i * N + j + 1] +
+                    a[(i + 1) * N + j - 1] + a[(i + 1) * N + j] + a[(i + 1) * N + j + 1]) / 9.0
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    for i in 0..N {
+        for j in 0..N {
+            a[i * N + j] = (f64(i) * f64(j + 2) + 2.0) / f64(N)
+        }
+    }
+    kernel(a)
+    try pb.Dump("A", a)
+    return 0
+}

@@ -1,0 +1,118 @@
+// Cilk-5.4.6 examples/matmul.cilk: C := A B in float by recursive halving of
+// the largest of the three dimensions.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: refused. Halving m gives two spawns that write the top and bottom
+// rows of C; halving n gives two in sequence, as in C; halving p gives two
+// spawns that write the left and right columns of C. The rows are pieces of
+// the slice that holds them, cut by chunks (n is a power of two, so every
+// half is exact). The columns are not: a slice is cut into runs of
+// consecutive elements, and half the columns of a block is not one run. No
+// form was found that hands them to two tasks, so the p halves run one after
+// the other. Each element of C sees the same additions in the same order as
+// in C, so the bits are the same.
+// Args: 256
+// Answer: ^(Max error bits|C bits)
+// Patch: s/printf\("Max error     = %g\\n", err\);/{ unsigned long long h = 14695981039346656037ULL, b; unsigned int w; int q; memcpy(&b, &err, 8); printf("Max error bits = %llx\\n", b); for (q = 0; q < n * n; q++) { memcpy(&w, &C2[q], 4); h = (h ^ w) * 1099511628211ULL; } printf("C bits = %llx\\n", h); }/
+
+import "std/io"
+import "std/mem"
+
+const N = 256
+
+func iterMatmul(a []f32, b []f32, mut c []f32, n i64) {
+    for i in 0..n {
+        for k in 0..n {
+            mut s := f32(0.0)
+            for j in 0..n {
+                s += a[i * n + j] * b[j * n + k]
+            }
+            c[i * n + k] = s
+        }
+    }
+}
+
+// A, B and C start at the block's first element; c holds whole rows of the
+// block, from its first row to its last.
+func recMatmul(a []f32, b []f32, mut c []f32, m i64, n i64, p i64, ld i64, add bool) {
+    if m + n + p <= 64 {
+        for i in 0..m {
+            for k in 0..p {
+                mut s := f32(0.0)
+                for j in 0..n {
+                    s += a[i * ld + j] * b[j * ld + k]
+                }
+                if add {
+                    c[i * ld + k] += s
+                } else {
+                    c[i * ld + k] = s
+                }
+            }
+        }
+    } else if m >= n && n >= p {
+        m1 := m >> 1
+        mut end := u64(m * ld)
+        if end > c.len {
+            end = c.len
+        }
+        mut rows := c[0..end]
+        scope {
+            for off, half in rows.chunks(u64(m1 * ld)) {
+                spawn recMatmul(a[off..], b, half, m1, n, p, ld, add)
+            }
+        }
+    } else if n >= m && n >= p {
+        n1 := n >> 1
+        recMatmul(a, b, c, m, n1, p, ld, add)
+        recMatmul(a[u64(n1)..], b[u64(n1 * ld)..], c, m, n - n1, p, ld, true)
+    } else {
+        p1 := p >> 1
+        recMatmul(a, b, c, m, n, p1, ld, add)
+        recMatmul(a, b[u64(p1)..], c[u64(p1)..], m, n, p - p1, ld, add)
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f32](&heap, N * N) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f32](&heap, N * N) orelse return error.OutOfMemory
+    mut c1 := mem.Alloc[f32](&heap, N * N) orelse return error.OutOfMemory
+    mut c2 := mem.Alloc[f32](&heap, N * N) orelse return error.OutOfMemory
+    // Cilk_rand, from examples/rand.cilk; RAND_MAX is glibc's, 2^31 - 1.
+    mut nxt := u64(0)
+    for i in 0..N * N {
+        nxt = nxt *% 1103515245 +% 12345
+        a[i] = f32(f64((nxt >> 16) % 2147483648))
+    }
+    for i in 0..N * N {
+        nxt = nxt *% 1103515245 +% 12345
+        b[i] = f32(f64((nxt >> 16) % 2147483648))
+    }
+    for i in 0..N * N {
+        c1[i] = 0.0
+        c2[i] = 0.0
+    }
+    iterMatmul(a, b, c1, N)
+    recMatmul(a, b, c2, N, N, N, N, false)
+    mut err := 0.0
+    for i in 0..N * N {
+        mut diff := f64((c1[i] - c2[i]) / c1[i])
+        if diff < 0.0 {
+            diff = -diff
+        }
+        if diff > err {
+            err = diff
+        }
+    }
+    mut e := err
+    eb := [*]u64(&e)
+    try io.Printf("Max error bits = {x}\n", eb[0])
+    mut h := u64(14695981039346656037)
+    for i in 0..N * N {
+        mut v := c2[i]
+        w := [*]u32(&v)
+        h = (h ^ u64(w[0])) *% 1099511628211
+    }
+    try io.Printf("C bits = {x}\n", h)
+    return 0
+}

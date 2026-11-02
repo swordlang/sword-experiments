@@ -1,0 +1,142 @@
+// Cilk-5.4.6 examples/spacemul.cilk: R = A B for square matrices of 16 x 16
+// blocks stored quadrant after quadrant, eight products at each level.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: rewritten. Every matrix is stored a quadrant after another, down to
+// single blocks, so every spawn hands a task a run of its matrix: two
+// halves in init_matrix and check_result, the four quadrants of R twice in
+// matrixmul. Those runs are the pieces of chunks, which is the change of
+// form. The second four products add into the same quadrants as the first:
+// Cilk spawns them at once when the first four have finished (SYNCHED), and
+// into a temporary added afterwards when they have not. The serial elision
+// always takes the first, and so does the port. The flops matrixmul returns
+// are counted by a second walk, since a task gives nothing back. Every
+// element of A and B is 1, so every order of the additions gives the same
+// bits; the port keeps the C's anyway. The program prints what the C prints,
+// less the rate, and the bits of R and the flop count.
+// Args: -n 512 -c
+// Answer: ^(Options|R bits|WRONG)
+// Patch: s/^     if \(verify\)$/     { unsigned long long h = 14695981039346656037ULL, w; long q; for (q = 0; q < nblocks * BLOCK_SIZE; q++) { memcpy(&w, &((double *) R)[q], 8); h = (h ^ w) * 1099511628211ULL; } printf("R bits = %llx, flops = %lld\\n", h, flops); }\n     if (verify)/
+
+import "std/io"
+import "std/mem"
+
+const E = 16
+const BS = 256
+const N = 512
+
+func block(mut r []f64, a []f64, b []f64, add bool) {
+    for i in 0..E {
+        for j in 0..E {
+            mut s := 0.0
+            mut k0 := i64(0)
+            if add {
+                s = r[i * E + j]
+            } else {
+                s = a[i * E] * b[j]
+                k0 = 1
+            }
+            for k in k0..E {
+                s = s + a[i * E + k] * b[k * E + j]
+            }
+            r[i * E + j] = s
+        }
+    }
+}
+
+// R's quadrants are CG, CH, EH and EG, in that order; A's are C, D, E, F
+// and B's G, H, I, J. The second four products are DI, DJ, FJ and FI.
+func matrixmul(nb i64, a []f64, b []f64, mut r []f64, add bool) {
+    if nb == 1 {
+        block(r, a, b, add)
+        return
+    }
+    q := r.len / 4
+    aOf := [2][4]u64{[4]u64{0, 0, 2, 2}, [4]u64{1, 1, 3, 3}}
+    bOf := [2][4]u64{[4]u64{0, 1, 1, 0}, [4]u64{2, 3, 3, 2}}
+    for phase in 0..2 {
+        scope {
+            for off, part in r.chunks(q) {
+                t := off / q
+                aq := aOf[phase][t]
+                bq := bOf[phase][t]
+                spawn matrixmul(nb / 2, a[aq * q..(aq + 1) * q], b[bq * q..(bq + 1) * q], part,
+                    add || phase == 1)
+            }
+        }
+    }
+}
+
+func flopsOf(nb i64, add bool) i64 {
+    if nb == 1 {
+        if add {
+            return 8192
+        }
+        return 7936
+    }
+    return 4 * flopsOf(nb / 2, add) + 4 * flopsOf(nb / 2, true)
+}
+
+func initMatrix(mut a []f64, num i64) {
+    if num == 1 {
+        for i in 0..a.len {
+            a[i] = 1.0
+        }
+        return
+    }
+    scope {
+        for off, half in a.chunks(a.len / 2) {
+            spawn initMatrix(half, num / 2)
+        }
+    }
+}
+
+func checkResult(r []f64, val f64, num i64, mut out *i64) {
+    if num == 1 {
+        for i in 0..r.len {
+            if r[i] != val {
+                *out = 1
+                return
+            }
+        }
+        *out = 0
+        return
+    }
+    h := r.len / 2
+    mut a := i64(0)
+    mut b := i64(0)
+    scope {
+        spawn checkResult(r[0..h], val, num / 2, &a)
+        spawn checkResult(r[h..], val, num / 2, &b)
+    }
+    *out = a + b
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    n := i64(N)
+    nblocks := n * n / BS
+    mut a := mem.Alloc[f64](&heap, u64(nblocks * BS)) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, u64(nblocks * BS)) orelse return error.OutOfMemory
+    mut r := mem.Alloc[f64](&heap, u64(nblocks * BS)) orelse return error.OutOfMemory
+    initMatrix(a, nblocks)
+    initMatrix(b, nblocks)
+    matrixmul(n / E, a, b, r, false)
+    flops := flopsOf(n / E, false)
+    mut wrong := i64(0)
+    checkResult(r, f64(n), nblocks, &wrong)
+
+    mut h := u64(14695981039346656037)
+    for q in 0..r.len {
+        mut v := r[q]
+        w := [*]u64(&v)
+        h = (h ^ w[0]) *% 1099511628211
+    }
+    try io.Printf("R bits = {x}, flops = {}\n", h, flops)
+    if wrong != 0 {
+        try io.Print("WRONG RESULT!\n")
+        return 0
+    }
+    try io.Printf("Options: n = {}\n", n)
+    return 0
+}

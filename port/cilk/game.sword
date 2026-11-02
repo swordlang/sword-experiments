@@ -1,0 +1,157 @@
+// Cilk-5.4.6 examples/game.cilk: a negamax search with alpha-beta pruning
+// of a game of coins on a 5 x 5 board, written to test abort.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: refused, and the one program whose spawns rest on abort. negamax
+// spawns one child per legal move, and an inlet takes the answers as they
+// come: a better one raises alpha, and once alpha reaches beta the inlet
+// aborts the children still running. Sword stops no task, so a child, once
+// spawned, runs to the end with the window it was given. Spawning every
+// move that way searches nearly the whole tree: on the M4 at four threads
+// the first move was not found in two minutes, nor with the first move
+// searched alone and the others spawned with the window it leaves, against
+// a fifth of a second for the whole serial elision. So only the top three
+// plies spawn, one child per move through chunks over the answers, each
+// with its parent's window, the parent then taking the answers in the order
+// of the moves as the inlet would; below them the search is the serial
+// elision's, a move at a time with the window the moves before it left,
+// stopping where the C aborts. Alpha-beta gives a parent the same answer
+// from a child under any window that holds the true value, so the moves
+// chosen are the C's. The count of aborts is not the C's, since which
+// children run depends on the windows; the port does not print it, and the
+// C prints it on a line of its own, outside the answer.
+// Args:
+// Answer: ^(White|Black|[01] )
+// Patch: s/^inline /static inline /
+// Patch: s/printf\("%s wins. Total # of aborts %d\\n\\n",/printf("%s wins.\\nTotal # of aborts %d\\n\\n",/
+
+import "std/io"
+
+const N = 5
+const M = 5
+const WIN = 1000
+const Spawning = 3
+
+struct Answer {
+    value i64
+    i i64
+    j i64
+}
+
+func lost(b [5][5]i64) bool {
+    return b[N - 1][M - 1] == 1
+}
+
+func play(b [5][5]i64, r i64, c i64) [5][5]i64 {
+    mut nb := b
+    for i in 0..r + 1 {
+        for j in 0..c + 1 {
+            nb[i][j] = 1
+        }
+    }
+    return nb
+}
+
+// The serial search below the plies that spawn: a move at a time, each
+// with the window the moves before it left, stopping where the C aborts.
+func search(b [5][5]i64, alpha0 i64, beta i64, depth i64) Answer {
+    if lost(b) {
+        return Answer{value: WIN - depth, i: 0, j: 0}
+    }
+    mut alpha := alpha0
+    mut best := Answer{value: 0, i: 0, j: 0}
+    for ii in 0..N {
+        for jj in 0..M {
+            i := N - 1 - ii
+            j := M - 1 - jj
+            if b[i][j] == 0 {
+                e := -search(play(b, i, j), -beta, -alpha, depth + 1).value
+                if e > alpha {
+                    alpha = e
+                    best.i = i
+                    best.j = j
+                }
+                if alpha >= beta {
+                    best.value = alpha
+                    return best
+                }
+            }
+        }
+    }
+    best.value = alpha
+    return best
+}
+
+func negamax(b [5][5]i64, alpha0 i64, beta i64, depth i64, mut out []Answer) {
+    if depth >= Spawning {
+        out[0] = search(b, alpha0, beta, depth)
+        return
+    }
+    if lost(b) {
+        out[0] = Answer{value: WIN - depth, i: 0, j: 0}
+        return
+    }
+    mut moves := [25]Answer{}
+    mut n := i64(0)
+    for ii in 0..N {
+        for jj in 0..M {
+            i := N - 1 - ii
+            j := M - 1 - jj
+            if b[i][j] == 0 {
+                moves[n] = Answer{value: 0, i: i, j: j}
+                n += 1
+            }
+        }
+    }
+    mut all := [25]Answer{}
+    mut answers := all[0..n]
+    scope {
+        for off, slot in answers.chunks(1) {
+            m := moves[off]
+            spawn negamax(play(b, m.i, m.j), -beta, -alpha0, depth + 1, slot)
+        }
+    }
+    mut alpha := alpha0
+    mut best := Answer{value: 0, i: 0, j: 0}
+    for k in 0..n {
+        e := -answers[k].value
+        if e > alpha {
+            alpha = e
+            best.i = moves[k].i
+            best.j = moves[k].j
+        }
+        if alpha >= beta {
+            break
+        }
+    }
+    best.value = alpha
+    out[0] = best
+}
+
+func main() !int {
+    mut b := [5][5]i64{}
+    mut player := 0
+    for !lost(b) {
+        player = 1 - player
+        mut answer := [1]Answer{}
+        negamax(b, -100000, 100000, 0, answer[..])
+        mut who := "Black"
+        if player == 1 {
+            who = "White"
+        }
+        try io.Printf("{} found best move at {},{}\n", who, answer[0].i, answer[0].j)
+        b = play(b, answer[0].i, answer[0].j)
+        for i in 0..N {
+            for j in 0..M {
+                try io.Printf("{} ", b[i][j])
+            }
+            try io.Print("\n")
+        }
+    }
+    mut winner := "White"
+    if player == 1 {
+        winner = "Black"
+    }
+    try io.Printf("{} wins.\n", winner)
+    return 0
+}

@@ -1,0 +1,47 @@
+// PolyBench/C 4.2.1 jacobi-2d, SMALL_DATASET: a five-point stencil, A and B
+// in turn.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The t loop carries A and B; each i loop writes row i of
+// one array and reads the other, so the rows are the pieces of chunks(N),
+// the two on the border skipped.
+
+import "std/mem"
+import "pb"
+
+const TSTEPS = 40
+const N = 90
+
+func sweep(mut dst []f64, src []f64) {
+    parallel for off, row in dst.chunks(N) {
+        i := i64(off) / N
+        if i == 0 || i == N - 1 {
+            continue
+        }
+        for j in 1..N - 1 {
+            row[j] = 0.2 * (src[i * N + j] + src[i * N + j - 1] + src[i * N + 1 + j] + src[(1 + i) * N + j] + src[(i - 1) * N + j])
+        }
+    }
+}
+
+func kernel(mut a []f64, mut b []f64) {
+    for t in 0..TSTEPS {
+        sweep(b, a)
+        sweep(a, b)
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    for i in 0..N {
+        for j in 0..N {
+            a[i * N + j] = (f64(i) * f64(j + 2) + 2.0) / f64(N)
+            b[i * N + j] = (f64(i) * f64(j + 3) + 3.0) / f64(N)
+        }
+    }
+    kernel(a, b)
+    try pb.Dump("A", a)
+    return 0
+}

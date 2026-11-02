@@ -1,0 +1,36 @@
+// PolyBench/C 4.2.1 jacobi-1d, SMALL_DATASET: a three-point stencil, A and B
+// in turn.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: as is. The t loop carries A and B; each i loop writes only B[i] or
+// A[i] and reads the other array.
+
+import "std/mem"
+import "pb"
+
+const TSTEPS = 40
+const N = 120
+
+func kernel(mut a []f64, mut b []f64) {
+    for t in 0..TSTEPS {
+        parallel for i in 1..b.len - 1 {
+            b[i] = 0.33333 * (a[i - 1] + a[i] + a[i + 1])
+        }
+        parallel for i in 1..a.len - 1 {
+            a[i] = 0.33333 * (b[i - 1] + b[i] + b[i + 1])
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    for i in 0..N {
+        a[i] = (f64(i) + 2.0) / f64(N)
+        b[i] = (f64(i) + 3.0) / f64(N)
+    }
+    kernel(a, b)
+    try pb.Dump("A", a)
+    return 0
+}

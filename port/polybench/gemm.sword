@@ -1,0 +1,51 @@
+// PolyBench/C 4.2.1 gemm, SMALL_DATASET: C := alpha*A*B + beta*C.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. Each i writes one row of C, which in Sword is a piece of
+// C.chunks(NJ).
+
+import "std/mem"
+import "pb"
+
+const NI = 60
+const NJ = 70
+const NK = 80
+
+func kernel(alpha f64, beta f64, mut c []f64, a []f64, b []f64) {
+    parallel for off, row in c.chunks(NJ) {
+        i := i64(off) / NJ
+        for j in 0..NJ {
+            row[j] *= beta
+        }
+        for k in 0..NK {
+            for j in 0..NJ {
+                row[j] += alpha * a[i * NK + k] * b[k * NJ + j]
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut c := mem.Alloc[f64](&heap, NI * NJ) orelse return error.OutOfMemory
+    mut a := mem.Alloc[f64](&heap, NI * NK) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, NK * NJ) orelse return error.OutOfMemory
+    for i in 0..NI {
+        for j in 0..NJ {
+            c[i * NJ + j] = f64((i * j + 1) % NI) / f64(NI)
+        }
+    }
+    for i in 0..NI {
+        for j in 0..NK {
+            a[i * NK + j] = f64(i * (j + 1) % NK) / f64(NK)
+        }
+    }
+    for i in 0..NK {
+        for j in 0..NJ {
+            b[i * NJ + j] = f64(i * (j + 2) % NJ) / f64(NJ)
+        }
+    }
+    kernel(1.5, 1.2, c, a, b)
+    try pb.Dump("C", c)
+    return 0
+}

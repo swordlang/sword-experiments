@@ -1,0 +1,193 @@
+// Cilk-5.4.6 examples/cilksort.cilk: a mergesort whose sorts and merges are
+// both spawned.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: rewritten, and the largest change in the port. Cilk recurses: four
+// spawns sort the quarters, each with the matching quarter of a scratch
+// array, then the merges split the destination where the middle element of
+// one run falls in the other. Sword refuses both. A loop may cut one slice
+// into pieces for its tasks, not two slices side by side, and a cut where
+// the data says is not a partition the checker can prove. So the recursion
+// becomes levels: a parallel loop sorts each QUICKSIZE piece with the same
+// quicksort, then each level merges pairs of runs from one array into the
+// other, every piece of MERGESIZE outputs finding its place in its two runs
+// by binary search and merging from there. Every spawn of the C has a
+// parallel loop doing that work, the last merge included.
+// Args: -n 3000000
+// Answer: ^options:
+
+import "std/io"
+import "std/mem"
+
+const QUICKSIZE = 2048
+const MERGESIZE = 2048
+const INSERTIONSIZE = 20
+
+func med3(a i64, b i64, c i64) i64 {
+    if a < b {
+        if b < c {
+            return b
+        }
+        if a < c {
+            return c
+        }
+        return a
+    }
+    if b > c {
+        return b
+    }
+    if a > c {
+        return c
+    }
+    return a
+}
+
+func seqpart(mut xs []i64, low i64, high i64) i64 {
+    pivot := med3(xs[low], xs[high], xs[low + (high - low) / 2])
+    mut cl := low
+    mut ch := high
+    for {
+        for xs[ch] > pivot {
+            ch -= 1
+        }
+        for xs[cl] < pivot {
+            cl += 1
+        }
+        if cl >= ch {
+            break
+        }
+        h := xs[ch]
+        xs[ch] = xs[cl]
+        xs[cl] = h
+        ch -= 1
+        cl += 1
+    }
+    if ch < high {
+        return ch
+    }
+    return ch - 1
+}
+
+func insertion(mut xs []i64, low i64, high i64) {
+    for q in low + 1..high + 1 {
+        a := xs[q]
+        mut p := q - 1
+        for p >= low && xs[p] > a {
+            xs[p + 1] = xs[p]
+            p -= 1
+        }
+        xs[p + 1] = a
+    }
+}
+
+func seqquick(mut xs []i64, low0 i64, high i64) {
+    mut low := low0
+    for high - low >= INSERTIONSIZE {
+        p := seqpart(xs, low, high)
+        seqquick(xs, low, p)
+        low = p + 1
+    }
+    insertion(xs, low, high)
+}
+
+// How many of the first k outputs of merging a and b come from a.
+func corank(k u64, a []i64, b []i64) u64 {
+    mut lo := u64(0)
+    if k > b.len {
+        lo = k - b.len
+    }
+    mut hi := k
+    if hi > a.len {
+        hi = a.len
+    }
+    for lo < hi {
+        i := lo + (hi - lo) / 2
+        if a[i] < b[k - i - 1] {
+            lo = i + 1
+        } else {
+            hi = i
+        }
+    }
+    return lo
+}
+
+func level(src []i64, mut dst []i64, width u64) {
+    parallel for off, out in dst.chunks(MERGESIZE) {
+        base := off / (2 * width) * (2 * width)
+        mut end := base + 2 * width
+        if end > src.len {
+            end = src.len
+        }
+        mut mid := base + width
+        if mid > end {
+            mid = end
+        }
+        a := src[base..mid]
+        b := src[mid..end]
+        k := off - base
+        mut i := corank(k, a, b)
+        mut j := k - i
+        for t in 0..out.len {
+            if j >= b.len || (i < a.len && a[i] < b[j]) {
+                out[t] = a[i]
+                i += 1
+            } else {
+                out[t] = b[j]
+                j += 1
+            }
+        }
+    }
+}
+
+func cilksort(mut xs []i64, mut tmp []i64) {
+    parallel for off, part in xs.chunks(QUICKSIZE) {
+        seqquick(part, 0, i64(part.len) - 1)
+    }
+    mut width := u64(QUICKSIZE)
+    mut inxs := true
+    for width < xs.len {
+        if inxs {
+            level(xs, tmp, width)
+        } else {
+            level(tmp, xs, width)
+        }
+        inxs = !inxs
+        width *= 2
+    }
+    if !inxs {
+        for i in 0..xs.len {
+            xs[i] = tmp[i]
+        }
+    }
+}
+
+func main() !int {
+    size := u64(3000000)
+    mut heap := mem.NewSystem()
+    mut array := mem.Alloc[i64](&heap, size) orelse return error.OutOfMemory
+    mut tmp := mem.Alloc[i64](&heap, size) orelse return error.OutOfMemory
+    mut nxt := u64(0)
+    for i in 0..size {
+        array[i] = i64(i)
+    }
+    for i in 0..size {
+        nxt = nxt *% 1103515245 +% 12345
+        j := nxt % size
+        t := array[i]
+        array[i] = array[j]
+        array[j] = t
+    }
+    cilksort(array, tmp)
+    mut success := true
+    for i in 0..size {
+        if array[i] != i64(i) {
+            success = false
+        }
+    }
+    if !success {
+        try io.Printf("SORTING FAILURE")
+    } else {
+        try io.Printf("options: number of elements = {}\n", size)
+    }
+    return 0
+}

@@ -1,0 +1,125 @@
+// PolyBench/C 4.2.1 deriche, SMALL_DATASET: Deriche's recursive edge
+// detection filter, in float.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. Each of the six nests is parallel in its outer loop. The
+// three over i write row i of y1, y2 or imgOut, the pieces of chunks(H); the
+// two over j write column j of y1 or y2, which in Sword are written
+// transposed, as rows of their own arrays, and read back so by the last nest.
+// The filter's constants call expf and powf in C; Sword has no f32 Exp and no
+// Pow, so they are taken in f64 and rounded to f32.
+
+import "std/mem"
+import "std/num"
+import "pb"
+
+const W = 192
+const H = 128
+
+func kernel(alpha f32, img []f32, mut out []f32, mut y1 []f32, mut y2 []f32, mut y1t []f32, mut y2t []f32) {
+    al := f64(alpha)
+    ea := f32(num.Exp(-al))
+    e2a := f32(num.Exp(2.0 * al))
+    em2a := f32(num.Exp(-2.0 * al))
+    one := f32(1.0)
+    two := f32(2.0)
+    k := (one - ea) * (one - ea) / (one + two * alpha * ea - e2a)
+    a1 := k
+    a5 := k
+    a2 := k * ea * (alpha - one)
+    a6 := a2
+    a3 := k * ea * (alpha + one)
+    a7 := a3
+    a4 := -k * em2a
+    a8 := a4
+    b1 := f32(num.Exp(-al * num.Log(2.0)))
+    b2 := -em2a
+    c1 := one
+    c2 := one
+    parallel for off, row in y1.chunks(H) {
+        i := i64(off) / H
+        mut ym1 := f32(0.0)
+        mut ym2 := f32(0.0)
+        mut xm1 := f32(0.0)
+        for j in 0..H {
+            row[j] = a1 * img[i * H + j] + a2 * xm1 + b1 * ym1 + b2 * ym2
+            xm1 = img[i * H + j]
+            ym2 = ym1
+            ym1 = row[j]
+        }
+    }
+    parallel for off, row in y2.chunks(H) {
+        i := i64(off) / H
+        mut yp1 := f32(0.0)
+        mut yp2 := f32(0.0)
+        mut xp1 := f32(0.0)
+        mut xp2 := f32(0.0)
+        mut j := H - 1
+        for j >= 0 {
+            row[j] = a3 * xp1 + a4 * xp2 + b1 * yp1 + b2 * yp2
+            xp2 = xp1
+            xp1 = img[i * H + j]
+            yp2 = yp1
+            yp1 = row[j]
+            j -= 1
+        }
+    }
+    parallel for off, row in out.chunks(H) {
+        i := i64(off) / H
+        for j in 0..H {
+            row[j] = c1 * (y1[i * H + j] + y2[i * H + j])
+        }
+    }
+    parallel for off, col in y1t.chunks(W) {
+        j := i64(off) / W
+        mut tm1 := f32(0.0)
+        mut ym1 := f32(0.0)
+        mut ym2 := f32(0.0)
+        for i in 0..W {
+            col[i] = a5 * out[i * H + j] + a6 * tm1 + b1 * ym1 + b2 * ym2
+            tm1 = out[i * H + j]
+            ym2 = ym1
+            ym1 = col[i]
+        }
+    }
+    parallel for off, col in y2t.chunks(W) {
+        j := i64(off) / W
+        mut tp1 := f32(0.0)
+        mut tp2 := f32(0.0)
+        mut yp1 := f32(0.0)
+        mut yp2 := f32(0.0)
+        mut i := W - 1
+        for i >= 0 {
+            col[i] = a7 * tp1 + a8 * tp2 + b1 * yp1 + b2 * yp2
+            tp2 = tp1
+            tp1 = out[i * H + j]
+            yp2 = yp1
+            yp1 = col[i]
+            i -= 1
+        }
+    }
+    parallel for off, row in out.chunks(H) {
+        i := i64(off) / H
+        for j in 0..H {
+            row[j] = c2 * (y1t[j * W + i] + y2t[j * W + i])
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut img := mem.Alloc[f32](&heap, W * H) orelse return error.OutOfMemory
+    mut out := mem.Alloc[f32](&heap, W * H) orelse return error.OutOfMemory
+    mut y1 := mem.Alloc[f32](&heap, W * H) orelse return error.OutOfMemory
+    mut y2 := mem.Alloc[f32](&heap, W * H) orelse return error.OutOfMemory
+    mut y1t := mem.Alloc[f32](&heap, H * W) orelse return error.OutOfMemory
+    mut y2t := mem.Alloc[f32](&heap, H * W) orelse return error.OutOfMemory
+    for i in 0..W {
+        for j in 0..H {
+            img[i * H + j] = f32((313 * i + 991 * j) % 65536) / f32(65535.0)
+        }
+    }
+    kernel(f32(0.25), img, out, y1, y2, y1t, y2t)
+    try pb.Dump32("imgOut", out)
+    return 0
+}
