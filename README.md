@@ -301,3 +301,18 @@ docker run --rm -v "$PWD/sword.tar:/sword.tar:ro" -v "$PWD:/exp" sword-ci:arm64 
   rayon's work stealing cut the sum differently from one round to the next
   from 2 or 4 threads up, and GCC's OpenMP, with and without `-ffast-math`,
   did the same at 8 and 16 threads on both Linux machines, as in E1b.
+- E5 and the diagnostics are in `results/e5/` (tables in `compare.md` and
+  `diagnose.md` there), from run 41361162048 against the same tag, kept apart
+  from E4 because that run's x86-64 machine was an AMD EPYC 9V74, not the
+  7763 E4 had; the run repeats the E4 kernels too. Sword gave one answer for
+  `hist`, `scan` and `sort` over all three machines and every thread count.
+  The other parallel methods gave 5 to 27 answers for `hist`, 4 to 8 for
+  `scan` and 5 to 10 for `sort`, except rayon's sort, which gave one; even
+  `c-serial` gave two answers for `sort`, glibc's `qsort` and Apple's
+  ordering the ties differently. Sword's stable sort is the slow one: 170 to
+  188 ms on one thread, against 41 to 92 ms for `qsort` and 8 to 12 ms for
+  rayon.
+- In the diagnostics, all six Sword programs are refused when the function
+  says `det`, on every machine, with the same messages. Without `det`, every
+  program in every language compiled without a warning and gave more than one
+  answer in its twenty runs on every machine, from 2 (`senders`) to 20.
