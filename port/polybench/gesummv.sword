@@ -1,0 +1,40 @@
+// PolyBench/C 4.2.1 gesummv, SMALL_DATASET: y := alpha A x + beta B x.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: as is. Each i writes only tmp[i] and y[i].
+
+import "std/mem"
+import "pb"
+
+const N = 90
+
+func kernel(alpha f64, beta f64, a []f64, b []f64, mut tmp []f64, x []f64, mut y []f64) {
+    parallel for i in 0..y.len {
+        tmp[i] = 0.0
+        y[i] = 0.0
+        for j in 0..N {
+            tmp[i] = a[i64(i) * N + j] * x[j] + tmp[i]
+            y[i] = b[i64(i) * N + j] * x[j] + y[i]
+        }
+        y[i] = alpha * tmp[i] + beta * y[i]
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut tmp := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut x := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut y := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    for i in 0..N {
+        x[i] = f64(i % N) / f64(N)
+        for j in 0..N {
+            a[i * N + j] = f64((i * j + 1) % N) / f64(N)
+            b[i * N + j] = f64((i * j + 2) % N) / f64(N)
+        }
+    }
+    kernel(1.5, 1.2, a, b, tmp, x, y)
+    try pb.Dump("y", y)
+    return 0
+}

@@ -1,0 +1,50 @@
+// PolyBench/C 4.2.1 trmm, SMALL_DATASET: B := alpha A^T B, A unit lower
+// triangular.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. In C the parallel loop is j: for one i, j writes B[i][j]
+// and reads B[k][j] of the rows below. Sword refuses it, since a loop writing
+// B may reach B only as B[j], and two slices of one array count as the same
+// memory however they are cut. Row i reads only rows not yet written, so with
+// a copy of B taken first every row can be computed at once: the rows are the
+// pieces of B.chunks(N), and the copy costs one more M x N array.
+
+import "std/mem"
+import "pb"
+
+const M = 60
+const N = 80
+
+func kernel(alpha f64, a []f64, b0 []f64, mut b []f64) {
+    parallel for off, row in b.chunks(N) {
+        i := i64(off) / N
+        for j in 0..N {
+            for k in i + 1..M {
+                row[j] += a[k * M + i] * b0[k * N + j]
+            }
+            row[j] = alpha * row[j]
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, M * M) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, M * N) orelse return error.OutOfMemory
+    mut b0 := mem.Alloc[f64](&heap, M * N) orelse return error.OutOfMemory
+    for i in 0..M {
+        for j in 0..i {
+            a[i * M + j] = f64((i + j) % M) / f64(M)
+        }
+        a[i * M + i] = 1.0
+        for j in 0..N {
+            b[i * N + j] = f64((N + (i - j)) % N) / f64(N)
+        }
+    }
+    for i in 0..b.len {
+        b0[i] = b[i]
+    }
+    kernel(1.5, a, b0, b)
+    try pb.Dump("B", b)
+    return 0
+}

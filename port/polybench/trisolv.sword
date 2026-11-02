@@ -1,0 +1,36 @@
+// PolyBench/C 4.2.1 trisolv, SMALL_DATASET: L x = b by forward substitution.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: sequential. x[i] reads every x[j] before it, and the j loop is a sum.
+
+import "std/mem"
+import "pb"
+
+const N = 120
+
+func kernel(l []f64, mut x []f64, b []f64) {
+    for i in 0..N {
+        x[i] = b[i]
+        for j in 0..i {
+            x[i] -= l[i * N + j] * x[j]
+        }
+        x[i] = x[i] / l[i * N + i]
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut l := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut x := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    for i in 0..N {
+        x[i] = -999.0
+        b[i] = f64(i)
+        for j in 0..i + 1 {
+            l[i * N + j] = f64(i + N - j + 1) * 2.0 / f64(N)
+        }
+    }
+    kernel(l, x, b)
+    try pb.Dump("x", x)
+    return 0
+}

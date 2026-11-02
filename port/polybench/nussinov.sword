@@ -1,0 +1,66 @@
+// PolyBench/C 4.2.1 nussinov, SMALL_DATASET: the most pairs an RNA sequence
+// can fold into, by dynamic programming.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: sequential. The i loop reads row i+1 and the j loop reads earlier
+// elements of its own row; the parallelism is along anti-diagonals, which
+// the loops as written do not have.
+
+import "std/mem"
+import "pb"
+
+const N = 180
+
+func best(a i64, b i64) i64 {
+    if a >= b {
+        return a
+    }
+    return b
+}
+
+func pairs(a i64, b i64) i64 {
+    if a + b == 3 {
+        return 1
+    }
+    return 0
+}
+
+func kernel(seq []i64, mut table []i64) {
+    mut i := N - 1
+    for i >= 0 {
+        for j in i + 1..N {
+            if j - 1 >= 0 {
+                table[i * N + j] = best(table[i * N + j], table[i * N + j - 1])
+            }
+            if i + 1 < N {
+                table[i * N + j] = best(table[i * N + j], table[(i + 1) * N + j])
+            }
+            if j - 1 >= 0 && i + 1 < N {
+                if i < j - 1 {
+                    table[i * N + j] = best(table[i * N + j], table[(i + 1) * N + j - 1] + pairs(seq[i], seq[j]))
+                } else {
+                    table[i * N + j] = best(table[i * N + j], table[(i + 1) * N + j - 1])
+                }
+            }
+            for k in i + 1..j {
+                table[i * N + j] = best(table[i * N + j], table[i * N + k] + table[(k + 1) * N + j])
+            }
+        }
+        i -= 1
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut seq := mem.Alloc[i64](&heap, N) orelse return error.OutOfMemory
+    mut table := mem.Alloc[i64](&heap, N * N) orelse return error.OutOfMemory
+    for i in 0..N {
+        seq[i] = (i + 1) % 4
+    }
+    for i in 0..N * N {
+        table[i] = 0
+    }
+    kernel(seq, table)
+    try pb.DumpUpperInts("table", table, N)
+    return 0
+}

@@ -1,0 +1,78 @@
+// PolyBench/C 4.2.1 lu, SMALL_DATASET: A := L and U, with L U = A.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The i loop carries the rows above, and the first j loop
+// reads earlier elements of its row. The second j loop is parallel: each j
+// writes A[i][j] and reads only finished rows and the finished start of row
+// i. Sword refuses a loop that writes A and reads it at other places, so the
+// tail of row i is worked on in a temporary of N elements and copied back.
+
+import "std/mem"
+import "pb"
+
+const N = 120
+
+// PolyBench's own start: a lower triangular matrix, then A := A A^T so
+// that it is positive semi-definite.
+func start(mut heap mem.Allocator, mut a []f64) !void {
+    for i in 0..N {
+        for j in 0..i + 1 {
+            a[i * N + j] = f64(-j % N) / f64(N) + 1.0
+        }
+        for j in i + 1..N {
+            a[i * N + j] = 0.0
+        }
+        a[i * N + i] = 1.0
+    }
+    mut b := mem.Alloc[f64](heap, N * N) orelse return error.OutOfMemory
+    defer mem.Free[f64](heap, b)
+    for i in 0..b.len {
+        b[i] = 0.0
+    }
+    for t in 0..N {
+        for r in 0..N {
+            for s in 0..N {
+                b[r * N + s] += a[r * N + t] * a[s * N + t]
+            }
+        }
+    }
+    for i in 0..b.len {
+        a[i] = b[i]
+    }
+}
+
+func kernel(mut a []f64, mut cur []f64) {
+    for i in 0..N {
+        for j in 0..i {
+            for k in 0..j {
+                a[i * N + j] -= a[i * N + k] * a[k * N + j]
+            }
+            a[i * N + j] /= a[j * N + j]
+        }
+        for j in 0..N {
+            cur[j] = a[i * N + j]
+        }
+        tail(i, a, cur)
+        for j in i..N {
+            a[i * N + j] = cur[j]
+        }
+    }
+}
+
+func tail(i i64, a []f64, mut cur []f64) {
+    parallel for j in u64(i)..cur.len {
+        for k in 0..i {
+            cur[j] -= a[i * N + k] * a[k * N + i64(j)]
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut cur := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    try start(&heap, a)
+    kernel(a, cur)
+    try pb.Dump("A", a)
+    return 0
+}

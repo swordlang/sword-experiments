@@ -1,0 +1,88 @@
+// Cilk-5.4.6 examples/knapsack.cilk: the 0-1 knapsack by branch and bound,
+// a spawn for each of "without this item" and "with it".
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: rewritten. The two spawns are kept. The bound every branch prunes
+// against is a global in C, read and written by all of them with no lock,
+// a race the program's own comment points out ("highly non-deterministic":
+// how much is pruned depends on the timing, the answer does not). Sword has
+// no globals and refuses a plain value written by several tasks, so the
+// bound is an atomic handed to every spawn, read and written as the C does.
+// The function is then not det, and `shield det` says so: the answer is
+// the same every run, the work is not.
+// Args: -f knapsack-example2.input
+// Answer: ^Best value
+
+import "std/io"
+
+const INTMIN = -2147483648
+
+struct Item {
+    value i64
+    weight i64
+}
+
+// knapsack-example2.input
+const COUNT = 28
+const CAPACITY = 1120
+
+func items() [28]Item {
+    raw := [56]i64{500, 96, 491, 100, 522, 96, 510, 96, 500, 95, 480, 99, 489, 99,
+        524, 100, 513, 102, 513, 104, 516, 95, 506, 98, 493, 106, 500, 99, 505, 104,
+        521, 105, 518, 102, 512, 101, 495, 98, 486, 104, 496, 100, 523, 95, 486, 106,
+        511, 99, 514, 103, 522, 93, 491, 103, 488, 101}
+    mut xs := [28]Item{}
+    for i in 0..COUNT {
+        xs[i] = Item{value: raw[2 * i], weight: raw[2 * i + 1]}
+    }
+    // Decreasing value for weight, as the C sorts them; no two tie here.
+    for i in 1..COUNT {
+        mut j := i
+        for j > 0 && f64(xs[j - 1].value) / f64(xs[j - 1].weight) < f64(xs[j].value) / f64(xs[j].weight) {
+            t := xs[j]
+            xs[j] = xs[j - 1]
+            xs[j - 1] = t
+            j -= 1
+        }
+    }
+    return xs
+}
+
+func knapsack(e []Item, c i64, n i64, v i64, bound *atomic[i64], mut out *i64) {
+    if c < 0 {
+        *out = INTMIN
+        return
+    }
+    if n == 0 || c == 0 {
+        *out = v
+        return
+    }
+    ub := f64(v) + f64(c * e[0].value / e[0].weight)
+    if ub < f64(bound.Load()) {
+        *out = INTMIN
+        return
+    }
+    mut without := i64(0)
+    mut with := i64(0)
+    scope {
+        spawn knapsack(e[1..], c, n - 1, v, bound, &without)
+        spawn knapsack(e[1..], c - e[0].weight, n - 1, v + e[0].value, bound, &with)
+    }
+    mut best := without
+    if with > without {
+        best = with
+    }
+    if best > bound.Load() {
+        bound.Store(best)
+    }
+    *out = best
+}
+
+func main() !int {
+    xs := items()
+    bound := atomic[i64](INTMIN)
+    mut sol := i64(0)
+    knapsack(xs[..], CAPACITY, COUNT, 0, &bound, &sol)
+    try io.Printf("Best value is {}\n", sol)
+    return 0
+}

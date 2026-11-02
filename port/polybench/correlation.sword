@@ -1,0 +1,84 @@
+// PolyBench/C 4.2.1 correlation, SMALL_DATASET: the correlation matrix of N
+// samples of M variables.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The j loops of the means and deviations write only
+// mean[j] and stddev[j], as is. The centering i loop writes row i of data, a
+// piece of data.chunks(M). The last i loop writes row i of corr after the
+// diagonal, and column i below it, which no other i touches; Sword cuts a
+// slice into rows only, so the rows are computed into a temporary and the
+// lower half copied across from it.
+
+import "std/mem"
+import "std/num"
+import "pb"
+
+const M = 80
+const N = 100
+
+func kernel(fln f64, mut data []f64, mut corr []f64, mut up []f64, mut mean []f64, mut stddev []f64) {
+    eps := 0.1
+    parallel for j in 0..mean.len {
+        mean[j] = 0.0
+        for i in 0..N {
+            mean[j] += data[i * M + i64(j)]
+        }
+        mean[j] /= fln
+    }
+    parallel for j in 0..stddev.len {
+        stddev[j] = 0.0
+        for i in 0..N {
+            d := data[i * M + i64(j)] - mean[j]
+            stddev[j] += d * d
+        }
+        stddev[j] /= fln
+        stddev[j] = num.Sqrt(stddev[j])
+        if stddev[j] <= eps {
+            stddev[j] = 1.0
+        }
+    }
+    parallel for off, row in data.chunks(M) {
+        for j in 0..M {
+            row[j] -= mean[j]
+            row[j] /= num.Sqrt(fln) * stddev[j]
+        }
+    }
+    parallel for off, row in up.chunks(M) {
+        i := i64(off) / M
+        for j in i + 1..M {
+            row[j] = 0.0
+            for k in 0..N {
+                row[j] += data[k * M + i] * data[k * M + j]
+            }
+        }
+    }
+    parallel for off, row in corr.chunks(M) {
+        i := i64(off) / M
+        for j in 0..M {
+            if j > i {
+                row[j] = up[i * M + j]
+            } else if j < i {
+                row[j] = up[j * M + i]
+            } else {
+                row[j] = 1.0
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut data := mem.Alloc[f64](&heap, N * M) orelse return error.OutOfMemory
+    mut corr := mem.Alloc[f64](&heap, M * M) orelse return error.OutOfMemory
+    mut up := mem.Alloc[f64](&heap, M * M) orelse return error.OutOfMemory
+    mut mean := mem.Alloc[f64](&heap, M) orelse return error.OutOfMemory
+    mut stddev := mem.Alloc[f64](&heap, M) orelse return error.OutOfMemory
+    for i in 0..N {
+        for j in 0..M {
+            data[i * M + j] = f64(i * j) / f64(M) + f64(i)
+        }
+    }
+    kernel(f64(N), data, corr, up, mean, stddev)
+    try pb.Dump("corr", corr)
+    return 0
+}

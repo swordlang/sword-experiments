@@ -1,0 +1,51 @@
+// PolyBench/C 4.2.1 doitgen, SMALL_DATASET: A[r][q][*] := A[r][q][*] C4.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The r loop is parallel once sum is private to it. In
+// Sword each r is a piece of A cut by NQ*NP, and sum an array of the piece's
+// own.
+
+import "std/mem"
+import "pb"
+
+const NQ = 20
+const NR = 25
+const NP = 30
+
+func kernel(mut a []f64, c4 []f64) {
+    parallel for off, block in a.chunks(NQ * NP) {
+        mut sum := [30]f64{}
+        for q in 0..NQ {
+            for p in 0..NP {
+                sum[p] = 0.0
+                for s in 0..NP {
+                    sum[p] += block[q * NP + s] * c4[s * NP + p]
+                }
+            }
+            for p in 0..NP {
+                block[q * NP + p] = sum[p]
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, NR * NQ * NP) orelse return error.OutOfMemory
+    mut c4 := mem.Alloc[f64](&heap, NP * NP) orelse return error.OutOfMemory
+    for i in 0..NR {
+        for j in 0..NQ {
+            for k in 0..NP {
+                a[(i * NQ + j) * NP + k] = f64((i * j + k) % NP) / f64(NP)
+            }
+        }
+    }
+    for i in 0..NP {
+        for j in 0..NP {
+            c4[i * NP + j] = f64(i * j % NP) / f64(NP)
+        }
+    }
+    kernel(a, c4)
+    try pb.Dump("A", a)
+    return 0
+}

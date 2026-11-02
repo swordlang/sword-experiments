@@ -1,0 +1,20 @@
+// The values of sin and exp heat.sword takes, as bits, for libm.sh.
+
+import "std/io"
+import "std/num"
+
+func main() !int {
+    dx := 1.570796326794896558 / 511.0
+    dt := 0.0000001 / 100.0
+    for a in 0..512 {
+        mut v := num.Sin(0.0 + f64(a) * dx)
+        w := [*]u64(&v)
+        try io.Printf("sin {x}\n", w[0])
+    }
+    for c in 0..101 {
+        mut v := num.Exp(-2.0 * (0.0 + f64(c) * dt))
+        w := [*]u64(&v)
+        try io.Printf("exp {x}\n", w[0])
+    }
+    return 0
+}

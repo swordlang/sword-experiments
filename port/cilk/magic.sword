@@ -1,0 +1,586 @@
+// Cilk-5.4.6 examples/magic.cilk: counts the magic squares of side n by
+// compiling their equations into a program for a machine that guesses,
+// then running every guess.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: as is. Compiling the program is serial in the C as here. execute
+// spawns one child per value a guess can take, each with copies of the
+// grid and of the used values, and adds up what they return; the copies
+// are arrays passed by value, and each child's count goes to its own slot
+// of an array cut by chunks(1), added after the scope.
+// Args: -n 4
+// Answer: ^(options|Result)
+
+import "std/io"
+
+const MaxSquare = 25
+const NMODULOS = 5
+
+const I_GUESS = 0
+const I_FIRST_GUESS = 1
+const I_DEDUCE = 2
+const I_GUESS_MOD = 3
+const I_PRUNE_ROW = 4
+const I_PRUNE_COL = 5
+const I_PRUNE_DIAG0 = 6
+const I_PRUNE_DIAG1 = 7
+const I_ACCEPT = 8
+
+const DEDUCE = 0
+const BLIND_GUESS = 1
+const GUESS_MODULO = 2
+
+struct Square {
+    n i64
+    nsquare i64
+    sum i64
+}
+
+struct Choice {
+    where i64
+    eq i64
+    mod i64
+    result i64
+}
+
+func gcd(i0 i64, j0 i64) i64 {
+    mut i := i0
+    mut j := j0
+    if i == 0 {
+        return j
+    }
+    if j == 0 {
+        return i
+    }
+    if i < 0 {
+        i = -i
+    }
+    if j < 0 {
+        j = -j
+    }
+    if i < j {
+        r := i
+        i = j
+        j = r
+    }
+    mut r := i % j
+    for r != 0 {
+        i = j
+        j = r
+        r = i % j
+    }
+    return j
+}
+
+func generateEquations(sq Square, mut a []i64, mut b []i64) i64 {
+    n := sq.n
+    c := sq.nsquare
+    for i in 0..a.len {
+        a[i] = 0
+    }
+    mut neq := i64(0)
+    for i in 0..n {
+        a[neq * c + i * n + i] = 1
+    }
+    b[neq] = sq.sum
+    neq += 1
+    for i in 0..n {
+        a[neq * c + i * n + n - 1 - i] = 1
+    }
+    b[neq] = sq.sum
+    neq += 1
+    for i in 0..n {
+        for j in 0..n {
+            a[neq * c + i * n + j] = 1
+        }
+        b[neq] = sq.sum
+        neq += 1
+    }
+    for j in 0..n {
+        for i in 0..n {
+            a[neq * c + i * n + j] = 1
+        }
+        b[neq] = sq.sum
+        neq += 1
+    }
+    return neq
+}
+
+func pivot(mut a []i64, mut b []i64, i i64, v i64, r i64, c i64) {
+    ic := i * c
+    mi := a[ic + v]
+    for k in 0..r {
+        mk := a[k * c + v]
+        if i != k && mk != 0 {
+            kc := k * c
+            for j in 0..c {
+                a[kc + j] = mi * a[kc + j] - mk * a[ic + j]
+            }
+            b[k] = mi * b[k] - mk * b[i]
+            mut g := b[k]
+            mut j := i64(0)
+            for g != 1 && j < c {
+                g = gcd(g, a[kc + j])
+                j += 1
+            }
+            if g != 1 && g != 0 {
+                b[k] = b[k] / g
+                for jj in 0..c {
+                    a[kc + jj] = a[kc + jj] / g
+                }
+            }
+        }
+    }
+}
+
+func gaussJordanize(mut a []i64, mut b []i64, r i64, c i64) {
+    mut v := i64(0)
+    for i in 0..r {
+        ic := i * c
+        mut k := i
+        mut found := false
+        for !found {
+            k = i
+            for k < r && a[k * c + v] == 0 {
+                k += 1
+            }
+            if k < r {
+                found = true
+            } else {
+                v += 1
+                if v == c {
+                    return
+                }
+            }
+        }
+        if k != i {
+            for j in v..c {
+                t := a[ic + j]
+                a[ic + j] = a[k * c + j]
+                a[k * c + j] = t
+            }
+            t := b[i]
+            b[i] = b[k]
+            b[k] = t
+        }
+        pivot(a, b, i, v, r, c)
+        v += 1
+    }
+}
+
+func cost(depth i64, m i64) i64 {
+    return depth * depth * depth * depth / m
+}
+
+func minimize(a []i64, r i64, c i64, known [25]i64, depth i64, mut choice *Choice,
+    soFar i64, mut gmin *i64) i64 {
+    if depth == 0 {
+        if soFar < *gmin {
+            *gmin = soFar
+        }
+        return soFar
+    }
+    if soFar >= *gmin {
+        return soFar
+    }
+    mut unknowns := [64]i64{}
+    mut unknownsMod := [320]i64{}
+    for i in 0..r {
+        ic := i * c
+        for j in 0..c {
+            if a[ic + j] != 0 && known[j] == 0 {
+                unknowns[i] += 1
+            }
+            for m in 2..i64(NMODULOS) {
+                if a[ic + j] % m != 0 && known[j] == 0 {
+                    unknownsMod[i * NMODULOS + m] += 1
+                }
+            }
+        }
+    }
+    mut min := i64(100000)
+    mut mineq := i64(0)
+    for i in 0..r {
+        if unknowns[i] > 0 && unknowns[i] < min {
+            min = unknowns[i]
+            mineq = i
+        }
+    }
+    mut dummy := Choice{where: 0, eq: 0, mod: 0, result: 0}
+    mut v := i64(0)
+    if min == 1 {
+        mut ndepth := depth
+        mut nknown := known
+        ic := mineq * c
+        for j in 0..c {
+            if a[ic + j] != 0 && nknown[j] == 0 {
+                nknown[j] = 1
+                v = j
+                ndepth -= 1
+            }
+        }
+        score := minimize(a, r, c, nknown, ndepth, &dummy, soFar, gmin)
+        choice.where = v
+        choice.eq = mineq
+        choice.result = DEDUCE
+        return score
+    }
+    min = 100000000
+    choice.result = BLIND_GUESS
+    for mm in 0..i64(NMODULOS - 2) {
+        m := NMODULOS - 1 - mm
+        for i in 0..r {
+            if unknownsMod[i * NMODULOS + m] == 1 {
+                mut ndepth := depth
+                mut nknown := known
+                ic := i * c
+                for j in 0..c {
+                    if a[ic + j] % m != 0 && nknown[j] == 0 {
+                        nknown[j] = 1
+                        v = j
+                        ndepth -= 1
+                    }
+                }
+                score := minimize(a, r, c, nknown, ndepth, &dummy, soFar + cost(ndepth, m), gmin)
+                if score < min {
+                    choice.eq = i
+                    choice.mod = m
+                    choice.result = GUESS_MODULO
+                    min = score
+                    choice.where = v
+                }
+            }
+        }
+    }
+    if choice.result == GUESS_MODULO {
+        return min
+    }
+    min = 100000000
+    for mm in 0..i64(NMODULOS - 2) {
+        m := NMODULOS - 1 - mm
+        for i in 0..r {
+            um := unknownsMod[i * NMODULOS + m]
+            if um != 0 && um != unknowns[i] {
+                mut ndepth := depth
+                ic := i * c
+                mut nknown := known
+                mut cst := i64(0)
+                for j in 0..c {
+                    if a[ic + j] % m != 0 && nknown[j] == 0 {
+                        nknown[j] = 1
+                        v = j
+                        ndepth -= 1
+                        cst += cost(ndepth, 1)
+                    }
+                }
+                cst -= cost(ndepth, 1)
+                cst += cost(ndepth, m)
+                score := minimize(a, r, c, nknown, ndepth, &dummy, soFar + cst, gmin)
+                if score < min {
+                    min = score
+                    choice.where = v
+                }
+            }
+        }
+    }
+    for i in 0..r {
+        if unknowns[i] != 0 {
+            mut ndepth := depth
+            ic := i * c
+            mut nknown := known
+            mut cst := i64(0)
+            for j in 0..c {
+                if a[ic + j] != 0 && nknown[j] == 0 {
+                    nknown[j] = 1
+                    v = j
+                    ndepth -= 1
+                    cst += cost(ndepth, 1)
+                }
+            }
+            cst -= cost(ndepth, 1)
+            score := minimize(a, r, c, nknown, ndepth, &dummy, soFar + cst, gmin)
+            if score < min {
+                min = score
+                choice.where = v
+            }
+        }
+    }
+    choice.result = BLIND_GUESS
+    return min
+}
+
+func emitLinear(mut pc []i64, mut at i64, a []i64, row i64, c i64, v i64) i64 {
+    for j in 0..c {
+        if j != v && a[row * c + j] != 0 {
+            pc[at] = j
+            pc[at + 1] = -a[row * c + j]
+            at += 2
+        }
+    }
+    pc[at] = -1
+    return at + 1
+}
+
+func emitPrunes(sq Square, mut pc []i64, mut at i64, last i64, known [25]i64) i64 {
+    n := sq.n
+    mut s := i64(0)
+    mut j := last % n
+    for j < sq.nsquare {
+        s += known[j]
+        j += n
+    }
+    if s >= 2 {
+        pc[at] = I_PRUNE_COL
+        pc[at + 1] = last % n
+        at += 2
+    }
+    // emit_prune_row counts from the row to the end of the grid.
+    s = 0
+    for k in (last / n) * n..sq.nsquare {
+        s += known[k]
+    }
+    if s >= 2 {
+        pc[at] = I_PRUNE_ROW
+        pc[at + 1] = last / n
+        at += 2
+    }
+    if last % (n + 1) == 0 {
+        s = 0
+        j = 0
+        for j < sq.nsquare {
+            s += known[j]
+            j += n + 1
+        }
+        if s >= 2 {
+            pc[at] = I_PRUNE_DIAG0
+            at += 1
+        }
+    }
+    if last % (n - 1) == 0 {
+        s = 0
+        j = n - 1
+        for j < sq.nsquare {
+            s += known[j]
+            j += n - 1
+        }
+        if s >= 2 {
+            pc[at] = I_PRUNE_DIAG1
+            at += 1
+        }
+    }
+    return at
+}
+
+func generateProgram(sq Square, mut pc []i64, a []i64, b []i64, r i64, c i64) {
+    mut known := [25]i64{}
+    mut last := i64(-1)
+    mut first := true
+    mut at := i64(0)
+    mut choice := Choice{where: 0, eq: 0, mod: 0, result: 0}
+    mut nvar := c
+    for nvar > 0 {
+        mut gmin := i64(1000000000)
+        minimize(a, r, c, known, nvar, &choice, 0, &gmin)
+        v := choice.where
+        i := choice.eq
+        if choice.result == DEDUCE {
+            pc[at] = I_DEDUCE
+            pc[at + 1] = v
+            pc[at + 2] = b[i]
+            pc[at + 3] = a[i * c + v]
+            at = emitLinear(pc, at + 4, a, i, c, v)
+            last = -1
+        } else if choice.result == BLIND_GUESS {
+            if last != -1 {
+                at = emitPrunes(sq, pc, at, last, known)
+            }
+            if first {
+                pc[at] = I_FIRST_GUESS
+            } else {
+                pc[at] = I_GUESS
+            }
+            pc[at + 1] = v
+            at += 2
+            first = false
+            last = v
+        } else {
+            if last != -1 {
+                at = emitPrunes(sq, pc, at, last, known)
+            }
+            pc[at] = I_GUESS_MOD
+            pc[at + 1] = v
+            pc[at + 2] = choice.mod
+            pc[at + 3] = b[i]
+            pc[at + 4] = a[i * c + v]
+            at = emitLinear(pc, at + 5, a, i, c, v)
+            first = false
+            last = v
+        }
+        known[v] = 1
+        nvar -= 1
+    }
+    pc[at] = I_ACCEPT
+}
+
+// One child per value: its own grid and used values, its count in its slot.
+func guesses(sq Square, grid [25]i64, used [25]i64, prog []i64, pc i64, q i64, lo i64,
+    hi i64, step i64, m i64, first bool) i64 {
+    mut all := [25]i64{}
+    mut counts := all[0..sq.nsquare]
+    scope {
+        for off, slot in counts.chunks(1) {
+            i := i64(off)
+            if i >= lo && i < hi && (i - lo) % step == 0 && used[i] == 0 {
+                mut ngrid := grid
+                mut nused := used
+                nused[i] = 1
+                ngrid[q] = i + 1
+                mut nm := m
+                if first {
+                    nm = 2
+                    if i + i == sq.nsquare - 1 {
+                        nm = 1
+                    }
+                }
+                spawn execute(sq, ngrid, nused, prog, pc, nm, slot)
+            }
+        }
+    }
+    mut count := i64(0)
+    for i in 0..counts.len {
+        count += counts[i]
+    }
+    return count
+}
+
+func linear(prog []i64, mut pc *i64, grid [25]i64, s0 i64) i64 {
+    mut s := s0
+    for {
+        t := prog[*pc]
+        *pc = *pc + 1
+        if t == -1 {
+            return s
+        }
+        z := prog[*pc]
+        *pc = *pc + 1
+        s += z * grid[t]
+    }
+    return s
+}
+
+func execute(sq Square, grid0 [25]i64, used0 [25]i64, prog []i64, pc0 i64, m i64,
+    mut out []i64) {
+    n := sq.n
+    nsquare := sq.nsquare
+    mut grid := grid0
+    mut used := used0
+    mut pc := pc0
+    out[0] = 0
+    for {
+        op := prog[pc]
+        pc += 1
+        if op == I_GUESS {
+            q := prog[pc]
+            out[0] = guesses(sq, grid, used, prog, pc + 1, q, 0, nsquare, 1, m, false)
+            return
+        }
+        if op == I_FIRST_GUESS {
+            q := prog[pc]
+            out[0] = guesses(sq, grid, used, prog, pc + 1, q, 0, nsquare / 2, 1, m, true)
+            return
+        }
+        if op == I_DEDUCE || op == I_GUESS_MOD {
+            q := prog[pc]
+            pc += 1
+            mut mod := i64(0)
+            if op == I_GUESS_MOD {
+                mod = prog[pc]
+                pc += 1
+            }
+            s0 := prog[pc]
+            i := prog[pc + 1]
+            pc += 2
+            s := linear(prog, &pc, grid, s0)
+            mut t := s / i
+            if i * t != s {
+                return
+            }
+            if op == I_GUESS_MOD {
+                t = (t + nsquare * mod - 1) % mod
+                out[0] = guesses(sq, grid, used, prog, pc, q, t, nsquare, mod, m, false)
+                return
+            }
+            if t < 1 || t > nsquare || used[t - 1] != 0 {
+                return
+            }
+            grid[q] = t
+            used[t - 1] = 1
+            continue
+        }
+        if op == I_ACCEPT {
+            out[0] = m
+            return
+        }
+        mut s := i64(0)
+        mut z := i64(0)
+        mut p := i64(0)
+        mut stride := i64(1)
+        if op == I_PRUNE_ROW {
+            p = n * prog[pc]
+            pc += 1
+        } else if op == I_PRUNE_COL {
+            p = prog[pc]
+            stride = n
+            pc += 1
+        } else if op == I_PRUNE_DIAG0 {
+            stride = n + 1
+        } else {
+            p = n - 1
+            stride = n - 1
+        }
+        for k in 0..n {
+            t := grid[p + k * stride]
+            s += t
+            if t == 0 {
+                z += 1
+            }
+        }
+        mut t := s
+        mut i := nsquare - 1
+        mut left := z
+        for left > 0 {
+            if used[i] == 0 {
+                left -= 1
+                t += i + 1
+            }
+            i -= 1
+        }
+        if t < sq.sum {
+            return
+        }
+        // The C counts z down to nothing in the first test, so the second
+        // adds no cell and compares the sum alone.
+        if s > sq.sum {
+            return
+        }
+    }
+}
+
+func main() !int {
+    n := i64(4)
+    nsquare := n * n
+    sq := Square{n: n, nsquare: nsquare, sum: n * (nsquare + 1) / 2}
+    mut a := [300]i64{}
+    mut b := [12]i64{}
+    neq := generateEquations(sq, a[0..nsquare * (2 * n + 2)], b[0..2 * n + 2])
+    gaussJordanize(a[0..nsquare * neq], b[0..neq], neq, nsquare)
+    mut program := [1024]i64{}
+    generateProgram(sq, program[..], a[0..nsquare * neq], b[0..neq], neq, nsquare)
+    grid := [25]i64{}
+    used := [25]i64{}
+    mut count := [1]i64{}
+    execute(sq, grid, used, program[..], 0, 1, count[..])
+    try io.Printf("options: <n> = {}\n", n)
+    try io.Printf("Result is {}\n", count[0])
+    return 0
+}

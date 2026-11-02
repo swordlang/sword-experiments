@@ -1,0 +1,245 @@
+// Cilk-5.4.6 examples/lu.cilk: LU decomposition without pivoting, on a
+// matrix of 16 x 16 blocks, by recursion on quadrants.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: refused. lu spawns lower_solve on the top right quadrant beside
+// upper_solve on the bottom left, both reading the top left; schur spawns
+// four tasks, one per quadrant it writes, twice; upper_solve spawns one task
+// per half of the rows; lower_solve one per half of the columns. In C the
+// blocks are stored a row of blocks after another, and a quadrant is not a
+// run of them. Here the blocks are stored in Z order, so that the quadrants
+// of any square of blocks are four consecutive runs, and its halves of rows
+// two: those are pieces of chunks. A half of the columns is still two runs
+// apart, as in matmul, and no form was found that hands it to a task, so
+// lower_solve's two halves run one after the other. What a task reads from
+// a quadrant of the same matrix its siblings write is copied first, because
+// two pieces of one slice are the same memory to a task that is not given
+// them: lu copies the top left before the two solves and the other two
+// before schur, and each half of upper_solve and lower_solve copies the
+// quadrant its schur reads. Every element sees the operations of the C in
+// the same order. The program prints what the C prints and the bits of the
+// decomposed matrix, element by element in rows.
+// Args: -n 256
+// Answer: ^(Options|LU bits)
+// Patch: s/^     if \(failed\)/     { unsigned long long h = 14695981039346656037ULL, w; int a, b; for (a = 0; a < n; a++) for (b = 0; b < n; b++) { memcpy(&w, &BLOCK(MATRIX(M, a \/ BLOCK_SIZE, b \/ BLOCK_SIZE), a % BLOCK_SIZE, b % BLOCK_SIZE), 8); h = (h ^ w) * 1099511628211ULL; } printf("LU bits = %llx\\n", h); }\n     if (failed)/
+
+import "std/io"
+import "std/mem"
+
+const B = 16
+const BB = 256
+const N = 256
+
+func blockLu(mut b []f64) {
+    for k in 0..B {
+        for i in k + 1..B {
+            b[i * B + k] = b[i * B + k] / b[k * B + k]
+            a := b[i * B + k]
+            for j in k + 1..B {
+                b[i * B + j] = b[i * B + j] - a * b[k * B + j]
+            }
+        }
+    }
+}
+
+func blockLowerSolve(mut b []f64, l []f64) {
+    for i in 1..B {
+        for k in 0..i {
+            a := l[i * B + k]
+            for j in 0..B {
+                b[i * B + j] = b[i * B + j] - a * b[k * B + j]
+            }
+        }
+    }
+}
+
+func blockUpperSolve(mut b []f64, u []f64) {
+    for i in 0..B {
+        for k in 0..B {
+            b[i * B + k] = b[i * B + k] / u[k * B + k]
+            a := b[i * B + k]
+            for j in k + 1..B {
+                b[i * B + j] = b[i * B + j] - a * u[k * B + j]
+            }
+        }
+    }
+}
+
+func blockSchur(mut b []f64, a []f64, c []f64) {
+    for i in 0..B {
+        for k in 0..B {
+            x := a[i * B + k]
+            for j in 0..B {
+                b[i * B + j] = b[i * B + j] - x * c[k * B + j]
+            }
+        }
+    }
+}
+
+func copyOf(xs []f64, mut to []f64) {
+    for i in 0..xs.len {
+        to[i] = xs[i]
+    }
+}
+
+// M -= V W. In Z order the quadrant in row r and column c is the run 2r + c.
+func schur(mut m []f64, v []f64, w []f64, nb i64) {
+    if nb == 1 {
+        blockSchur(m, v, w)
+        return
+    }
+    q := m.len / 4
+    for k in 0..u64(2) {
+        scope {
+            for off, part in m.chunks(q) {
+                t := off / q
+                r := t / 2
+                c := t % 2
+                spawn schur(part, v[(2 * r + k) * q..(2 * r + k + 1) * q],
+                    w[(2 * k + c) * q..(2 * k + c + 1) * q], nb / 2)
+            }
+        }
+    }
+}
+
+func lowerSolve(mut m []f64, l []f64, nb i64, fails *atomic[i64]) {
+    if nb == 1 {
+        blockLowerSolve(m, l)
+        return
+    }
+    q := m.len / 4
+    mut heap := mem.NewSystem()
+    mut tmp := mem.Alloc[f64](&heap, q) orelse { fails.Add(1); return }
+    // aux_lower_solve on each half of the columns, one after the other.
+    for c in 0..u64(2) {
+        lowerSolve(m[c * q..(c + 1) * q], l[0..q], nb / 2, fails)
+        copyOf(m[c * q..(c + 1) * q], tmp)
+        schur(m[(2 + c) * q..(3 + c) * q], l[2 * q..3 * q], tmp, nb / 2)
+        lowerSolve(m[(2 + c) * q..(3 + c) * q], l[3 * q..], nb / 2, fails)
+    }
+    mem.Free[f64](&heap, tmp)
+}
+
+// aux_upper_solve on one half of the rows: its two quadrants are the halves
+// of the run it is given.
+func upperHalf(mut half []f64, u []f64, nb i64, fails *atomic[i64]) {
+    q := half.len / 2
+    mut heap := mem.NewSystem()
+    mut tmp := mem.Alloc[f64](&heap, q) orelse { fails.Add(1); return }
+    upperSolve(half[0..q], u[0..q], nb, fails)
+    copyOf(half[0..q], tmp)
+    schur(half[q..], tmp, u[q..2 * q], nb)
+    upperSolve(half[q..], u[3 * q..], nb, fails)
+    mem.Free[f64](&heap, tmp)
+}
+
+func upperSolve(mut m []f64, u []f64, nb i64, fails *atomic[i64]) {
+    if nb == 1 {
+        blockUpperSolve(m, u)
+        return
+    }
+    scope {
+        for off, half in m.chunks(m.len / 2) {
+            spawn upperHalf(half, u, nb / 2, fails)
+        }
+    }
+}
+
+func lu(mut m []f64, nb i64, fails *atomic[i64]) {
+    if nb == 1 {
+        blockLu(m)
+        return
+    }
+    q := m.len / 4
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, q) orelse { fails.Add(1); return }
+    mut b := mem.Alloc[f64](&heap, q) orelse { fails.Add(1); return }
+    lu(m[0..q], nb / 2, fails)
+    copyOf(m[0..q], a)
+    scope {
+        for off, part in m.chunks(q) {
+            if off == q {
+                spawn lowerSolve(part, a, nb / 2, fails)
+            } else if off == 2 * q {
+                spawn upperSolve(part, a, nb / 2, fails)
+            }
+        }
+    }
+    copyOf(m[2 * q..3 * q], a)
+    copyOf(m[q..2 * q], b)
+    schur(m[3 * q..], a, b, nb / 2)
+    lu(m[3 * q..], nb / 2, fails)
+    mem.Free[f64](&heap, a)
+    mem.Free[f64](&heap, b)
+}
+
+// Where element (i, j) lives: its block's place in Z order, then the row.
+func at(i i64, j i64) i64 {
+    bi := i / B
+    bj := j / B
+    mut z := i64(0)
+    for bit in 0..i64(32) {
+        z = z | (((bj >> bit) & 1) << (2 * bit)) | (((bi >> bit) & 1) << (2 * bit + 1))
+    }
+    return z * BB + (i % B) * B + j % B
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    n := i64(N)
+    nb := n / B
+    mut r := mem.Alloc[u32](&heap, u64(n * n + 344)) orelse return error.OutOfMemory
+    mut m := mem.Alloc[f64](&heap, u64(n * n)) orelse return error.OutOfMemory
+
+    // glibc's rand() seeded with 1: the additive generator of random_r, TYPE_3.
+    mut word := i64(1)
+    r[0] = 1
+    for i in 1..31 {
+        hi := word / 127773
+        lo := word % 127773
+        word = 16807 * lo - 2836 * hi
+        if word < 0 {
+            word += 2147483647
+        }
+        r[i] = u32(word)
+    }
+    for i in 31..34 {
+        r[i] = r[i - 31]
+    }
+    for i in 34..r.len {
+        r[i] = r[i - 31] +% r[i - 3]
+    }
+    // init_matrix fills block after block, each in rows.
+    mut next := i64(344)
+    for bi in 0..nb {
+        for bj in 0..nb {
+            for i in 0..B {
+                for j in 0..B {
+                    m[at(bi * B + i, bj * B + j)] = f64(i64(r[next] >> 1)) / 2147483647.0
+                    next += 1
+                }
+            }
+        }
+    }
+    for k in 0..n {
+        m[at(k, k)] = m[at(k, k)] * 10.0
+    }
+
+    mut fails := atomic[i64](0)
+    lu(m, nb, &fails)
+    if fails.Load() > 0 {
+        return error.OutOfMemory
+    }
+
+    mut h := u64(14695981039346656037)
+    for i in 0..n {
+        for j in 0..n {
+            mut v := m[at(i, j)]
+            w := [*]u64(&v)
+            h = (h ^ w[0]) *% 1099511628211
+        }
+    }
+    try io.Printf("LU bits = {x}\n", h)
+    try io.Printf("Options: (n x n matrix) n = {}\n", n)
+    return 0
+}

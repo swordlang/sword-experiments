@@ -1,0 +1,32 @@
+// Cilk-5.4.6 examples/fib.cilk: the nth Fibonacci number, two spawns a call.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: as is. The two spawns and the sync are a scope with two spawns;
+// each child writes its number where the parent says.
+// Args: 30
+// Answer: ^Result
+
+import "std/io"
+
+func fib(n i64, mut out *i64) {
+    if n < 2 {
+        *out = n
+        return
+    }
+    mut x := i64(0)
+    mut y := i64(0)
+    scope {
+        spawn fib(n - 1, &x)
+        spawn fib(n - 2, &y)
+    }
+    *out = x + y
+}
+
+func main() !int {
+    mut result := i64(0)
+    scope {
+        spawn fib(30, &result)
+    }
+    try io.Printf("Result: {}\n", result)
+    return 0
+}

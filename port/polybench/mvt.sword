@@ -1,0 +1,44 @@
+// PolyBench/C 4.2.1 mvt, SMALL_DATASET: x1 += A y_1, x2 += A^T y_2.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: as is. In both nests i writes only x1[i] or x2[i].
+
+import "std/mem"
+import "pb"
+
+const N = 120
+
+func kernel(a []f64, y1 []f64, y2 []f64, mut x1 []f64, mut x2 []f64) {
+    parallel for i in 0..x1.len {
+        for j in 0..N {
+            x1[i] = x1[i] + a[i64(i) * N + j] * y1[j]
+        }
+    }
+    parallel for i in 0..x2.len {
+        for j in 0..N {
+            x2[i] = x2[i] + a[j * N + i64(i)] * y2[j]
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut a := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut x1 := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut x2 := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut y1 := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    mut y2 := mem.Alloc[f64](&heap, N) orelse return error.OutOfMemory
+    for i in 0..N {
+        x1[i] = f64(i % N) / f64(N)
+        x2[i] = f64((i + 1) % N) / f64(N)
+        y1[i] = f64((i + 3) % N) / f64(N)
+        y2[i] = f64((i + 4) % N) / f64(N)
+        for j in 0..N {
+            a[i * N + j] = f64(i * j % N) / f64(N)
+        }
+    }
+    kernel(a, y1, y2, x1, x2)
+    try pb.Dump("x1", x1)
+    try pb.Dump("x2", x2)
+    return 0
+}

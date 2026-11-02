@@ -1,0 +1,188 @@
+// Cilk-5.4.6 examples/heat.cilk: a Jacobi iteration for the heat equation on
+// a grid, split into stripes of rows by recursive halving.
+// Derived from Cilk-5.4.6; see COPYING.
+//
+// Class: rewritten. The grid is one array, and a stripe of rows is a piece
+// of it: each halving is chunks of half the rows, rounded up where the C
+// rounds down, which moves where stripes end and nothing they compute. The
+// C also allocates each row in parallel through the same recursion, a row
+// at a time with malloc; here the grid is one allocation, made before, and
+// those spawns are gone (the C's own comment says the sequential one may
+// be faster). The initialisation and every time step are spawned as in C.
+// The C prints no part of the grid; the patch prints the bits of the last
+// one. They differ, and only because of the maths library: glibc's sin is
+// not the fdlibm one std/num carries, and the two disagree by one ulp at 13
+// of the 613 arguments this program takes. Built with Sword's values of sin
+// and exp in place of glibc's, the C gives these bits (libm/heat.sh).
+// Args:
+// Answer: ^(   d[xyt] =| Stability|grid bits)
+// Patch: s/^  tm_elapsed = Cilk_get_wall_time\(\) - tm_begin;/  tm_elapsed = Cilk_get_wall_time() - tm_begin; { double **mat = (c % 2) ? old : new; unsigned long long h = 14695981039346656037ULL, w; int a, b; for (a = 0; a < nx; a++) for (b = 0; b < ny; b++) { memcpy(&w, &mat[a][b], 8); h = (h ^ w) * 1099511628211ULL; } printf("grid bits = %llx\\n", h); }/
+
+import "std/io"
+import "std/mem"
+import "std/num"
+
+const NX = 512
+const NY = 512
+const NT = 100
+const LEAF = 10
+
+struct Grid {
+    xu f64
+    yu f64
+    dx f64
+    dy f64
+    dtdxsq f64
+    dtdysq f64
+}
+
+func randb(x f64, t f64) f64 {
+    return num.Exp(-2.0 * t) * num.Sin(x)
+}
+
+func randd(y f64, t f64) f64 {
+    return num.Exp(-2.0 * t) * num.Sin(y)
+}
+
+// rows holds rows lb..ub of the grid being written.
+func initgrid(g Grid, mut rows []f64, lb i64, ub i64) {
+    llb := if_zero(lb, 1)
+    lub := if_last(ub, NX - 1)
+    for a in llb..lub {
+        rows[(a - lb) * NY] = 0.0
+    }
+    for a in llb..lub {
+        rows[(a - lb) * NY + NY - 1] = randb(g.xu + f64(a) * g.dx, 0.0)
+    }
+    if lb == 0 {
+        for b in 0..NY {
+            rows[b] = 0.0
+        }
+    }
+    if ub == NX {
+        for b in 0..NY {
+            rows[(NX - 1 - lb) * NY + b] = randd(g.yu + f64(b) * g.dy, 0.0)
+        }
+    }
+    for a in llb..lub {
+        for b in 1..NY - 1 {
+            rows[(a - lb) * NY + b] = num.Sin(g.xu + f64(a) * g.dx) * num.Sin(g.yu + f64(b) * g.dy)
+        }
+    }
+}
+
+func if_zero(lb i64, v i64) i64 {
+    if lb == 0 {
+        return v
+    }
+    return lb
+}
+
+func if_last(ub i64, v i64) i64 {
+    if ub == NX {
+        return v
+    }
+    return ub
+}
+
+func compstripe(g Grid, t f64, mut rows []f64, old []f64, lb i64, ub i64) {
+    llb := if_zero(lb, 1)
+    lub := if_last(ub, NX - 1)
+    for a in llb..lub {
+        for b in 1..NY - 1 {
+            c := a * NY + b
+            rows[(a - lb) * NY + b] = g.dtdxsq * (old[c + NY] - 2.0 * old[c] + old[c - NY]) +
+                g.dtdysq * (old[c + 1] - 2.0 * old[c] + old[c - 1]) +
+                old[c]
+        }
+    }
+    for a in llb..lub {
+        rows[(a - lb) * NY + NY - 1] = randb(g.xu + f64(a) * g.dx, t)
+    }
+    for a in llb..lub {
+        rows[(a - lb) * NY] = 0.0
+    }
+    if lb == 0 {
+        for b in 0..NY {
+            rows[b] = 0.0
+        }
+    }
+    if ub == NX {
+        for b in 0..NY {
+            rows[(NX - 1 - lb) * NY + b] = randd(g.yu + f64(b) * g.dy, t)
+        }
+    }
+}
+
+func initDivide(g Grid, mut rows []f64, lb i64, ub i64) {
+    if ub - lb > LEAF {
+        half := (ub - lb + 1) / 2
+        scope {
+            for off, part in rows.chunks(u64(half * NY)) {
+                first := lb + i64(off) / NY
+                spawn initDivide(g, part, first, first + i64(part.len) / NY)
+            }
+        }
+        return
+    }
+    initgrid(g, rows, lb, ub)
+}
+
+func compDivide(g Grid, t f64, mut rows []f64, old []f64, lb i64, ub i64) {
+    if ub - lb > LEAF {
+        half := (ub - lb + 1) / 2
+        scope {
+            for off, part in rows.chunks(u64(half * NY)) {
+                first := lb + i64(off) / NY
+                spawn compDivide(g, t, part, old, first, first + i64(part.len) / NY)
+            }
+        }
+        return
+    }
+    compstripe(g, t, rows, old, lb, ub)
+}
+
+func main() !int {
+    xu := 0.0
+    xo := 1.570796326794896558
+    yu := 0.0
+    yo := 1.570796326794896558
+    tu := 0.0
+    to := 0.0000001
+    dx := (xo - xu) / f64(NX - 1)
+    dy := (yo - yu) / f64(NY - 1)
+    dt := (to - tu) / f64(NT)
+    g := Grid{xu: xu, yu: yu, dx: dx, dy: dy, dtdxsq: dt / (dx * dx), dtdysq: dt / (dy * dy)}
+    mut heap := mem.NewSystem()
+    mut old := mem.Alloc[f64](&heap, NX * NY) orelse return error.OutOfMemory
+    mut new := mem.Alloc[f64](&heap, NX * NY) orelse return error.OutOfMemory
+    initDivide(g, old, 0, NX)
+    for c in 1..NT + 1 {
+        t := tu + f64(c) * dt
+        if c % 2 == 1 {
+            compDivide(g, t, new, old, 0, NX)
+        } else {
+            compDivide(g, t, old, new, 0, NX)
+        }
+    }
+    mut h := u64(14695981039346656037)
+    last := if_odd(NT + 1, old, new)
+    for i in 0..last.len {
+        mut v := last[i]
+        w := [*]u64(&v)
+        h = (h ^ w[0]) *% 1099511628211
+    }
+    try io.Printf("grid bits = {x}\n", h)
+    try io.Printf("   dx = {.6}\n", dx)
+    try io.Printf("   dy = {.6}\n", dy)
+    try io.Printf("   dt = {.6}\n", dt)
+    try io.Printf(" Stability Value for explicit method must be > 0:  {.6}\n", 0.5 - (dt / (dx * dx) + dt / (dy * dy)))
+    return 0
+}
+
+func if_odd(c i64, a []f64, b []f64) []f64 {
+    if c % 2 == 1 {
+        return a
+    }
+    return b
+}

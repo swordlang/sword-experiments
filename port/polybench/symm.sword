@@ -1,0 +1,68 @@
+// PolyBench/C 4.2.1 symm, SMALL_DATASET: C := alpha A B + beta C, A
+// symmetric, its lower triangle stored.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The i loop carries C[k][j] for k < i; the parallel loop is
+// j, and iteration j touches only column j of C. Sword cuts a slice into rows,
+// never columns, so C is copied transposed, the loops are swapped to give each
+// column the whole i loop in its original order, the columns are the pieces
+// of Ct.chunks(M), and C is copied back. Each element sees the same
+// operations in the same order; the cost is one more M x N array and two
+// copies.
+
+import "std/mem"
+import "pb"
+
+const M = 60
+const N = 80
+
+func kernel(alpha f64, beta f64, mut c []f64, mut ct []f64, a []f64, b []f64) {
+    parallel for off, col in ct.chunks(M) {
+        j := i64(off) / M
+        for k in 0..M {
+            col[k] = c[k * N + j]
+        }
+    }
+    parallel for off, col in ct.chunks(M) {
+        j := i64(off) / M
+        for i in 0..M {
+            mut temp2 := 0.0
+            for k in 0..i {
+                col[k] += alpha * b[i * N + j] * a[i * M + k]
+                temp2 += b[k * N + j] * a[i * M + k]
+            }
+            col[i] = beta * col[i] + alpha * b[i * N + j] * a[i * M + i] + alpha * temp2
+        }
+    }
+    parallel for off, row in c.chunks(N) {
+        i := i64(off) / N
+        for j in 0..N {
+            row[j] = ct[j * M + i]
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut c := mem.Alloc[f64](&heap, M * N) orelse return error.OutOfMemory
+    mut ct := mem.Alloc[f64](&heap, N * M) orelse return error.OutOfMemory
+    mut a := mem.Alloc[f64](&heap, M * M) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, M * N) orelse return error.OutOfMemory
+    for i in 0..M {
+        for j in 0..N {
+            c[i * N + j] = f64((i + j) % 100) / f64(M)
+            b[i * N + j] = f64((N + i - j) % 100) / f64(M)
+        }
+    }
+    for i in 0..M {
+        for j in 0..i + 1 {
+            a[i * M + j] = f64((i + j) % 100) / f64(M)
+        }
+        for j in i + 1..M {
+            a[i * M + j] = -999.0
+        }
+    }
+    kernel(1.5, 1.2, c, ct, a, b)
+    try pb.Dump("C", c)
+    return 0
+}

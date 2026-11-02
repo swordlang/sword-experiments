@@ -1,0 +1,92 @@
+// PolyBench/C 4.2.1 adi, SMALL_DATASET: alternating direction implicit
+// solution of a two-dimensional heat equation.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. The t loop carries u and v. In the column sweep each i
+// writes column i of v and rows i of p and q, and reads u; in the row sweep
+// each i writes row i of u and rows i of p and q, and reads v. Row i of p and
+// q is filled before it is read, so it is private to the iteration and in
+// Sword an array of the iteration's own. v is kept transposed, which makes
+// its column i a row, and the rows of v and u are the pieces of chunks(N),
+// the two on the border skipped.
+
+import "std/mem"
+import "pb"
+
+const TSTEPS = 40
+const N = 60
+
+func kernel(mut u []f64, mut vt []f64) {
+    dx := 1.0 / f64(N)
+    dy := 1.0 / f64(N)
+    dt := 1.0 / f64(TSTEPS)
+    b1 := 2.0
+    b2 := 1.0
+    mul1 := b1 * dt / (dx * dx)
+    mul2 := b2 * dt / (dy * dy)
+    a := -mul1 / 2.0
+    b := 1.0 + mul1
+    c := a
+    d := -mul2 / 2.0
+    e := 1.0 + mul2
+    f := d
+    for t in 1..TSTEPS + 1 {
+        parallel for off, col in vt.chunks(N) {
+            i := i64(off) / N
+            if i == 0 || i == N - 1 {
+                continue
+            }
+            mut p := [60]f64{}
+            mut q := [60]f64{}
+            col[0] = 1.0
+            p[0] = 0.0
+            q[0] = col[0]
+            for j in 1..N - 1 {
+                p[j] = -c / (a * p[j - 1] + b)
+                q[j] = (-d * u[j * N + i - 1] + (1.0 + 2.0 * d) * u[j * N + i] - f * u[j * N + i + 1] - a * q[j - 1]) / (a * p[j - 1] + b)
+            }
+            col[N - 1] = 1.0
+            mut j := N - 2
+            for j >= 1 {
+                col[j] = p[j] * col[j + 1] + q[j]
+                j -= 1
+            }
+        }
+        parallel for off, row in u.chunks(N) {
+            i := i64(off) / N
+            if i == 0 || i == N - 1 {
+                continue
+            }
+            mut p := [60]f64{}
+            mut q := [60]f64{}
+            row[0] = 1.0
+            p[0] = 0.0
+            q[0] = row[0]
+            for j in 1..N - 1 {
+                p[j] = -f / (d * p[j - 1] + e)
+                q[j] = (-a * vt[j * N + i - 1] + (1.0 + 2.0 * a) * vt[j * N + i] - c * vt[j * N + i + 1] - d * q[j - 1]) / (d * p[j - 1] + e)
+            }
+            row[N - 1] = 1.0
+            mut j := N - 2
+            for j >= 1 {
+                row[j] = p[j] * row[j + 1] + q[j]
+                j -= 1
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut u := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut vt := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    for i in 0..N {
+        for j in 0..N {
+            u[i * N + j] = f64(i + N - j) / f64(N)
+            vt[i * N + j] = 0.0
+        }
+    }
+    kernel(u, vt)
+    try pb.Dump("u", u)
+    return 0
+}

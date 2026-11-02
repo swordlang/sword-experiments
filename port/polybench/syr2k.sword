@@ -1,0 +1,47 @@
+// PolyBench/C 4.2.1 syr2k, SMALL_DATASET: C := alpha A B^T + alpha B A^T +
+// beta C, lower triangle.
+// Derived from PolyBench/C; see LICENSE.txt.
+//
+// Class: rewritten. Each i writes the start of row i of C, a piece of
+// C.chunks(N).
+
+import "std/mem"
+import "pb"
+
+const M = 60
+const N = 80
+
+func kernel(alpha f64, beta f64, mut c []f64, a []f64, b []f64) {
+    parallel for off, row in c.chunks(N) {
+        i := i64(off) / N
+        for j in 0..i + 1 {
+            row[j] *= beta
+        }
+        for k in 0..M {
+            for j in 0..i + 1 {
+                row[j] += a[j * M + k] * alpha * b[i * M + k] + b[j * M + k] * alpha * a[i * M + k]
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut heap := mem.NewSystem()
+    mut c := mem.Alloc[f64](&heap, N * N) orelse return error.OutOfMemory
+    mut a := mem.Alloc[f64](&heap, N * M) orelse return error.OutOfMemory
+    mut b := mem.Alloc[f64](&heap, N * M) orelse return error.OutOfMemory
+    for i in 0..N {
+        for j in 0..M {
+            a[i * M + j] = f64((i * j + 1) % N) / f64(N)
+            b[i * M + j] = f64((i * j + 2) % M) / f64(M)
+        }
+    }
+    for i in 0..N {
+        for j in 0..N {
+            c[i * N + j] = f64((i * j + 3) % N) / f64(M)
+        }
+    }
+    kernel(1.5, 1.2, c, a, b)
+    try pb.Dump("C", c)
+    return 0
+}
