@@ -110,7 +110,9 @@ if has c; then
         "c-fastmath-serial|$build/c-fastmath|serial" "c-fastmath-omp|$build/c-fastmath|omp" \
         "c-nofma-serial|$build/c-nofma|serial" "c-nofma-omp|$build/c-nofma|omp" \
         "c-native-serial|$build/c-native|serial" "c-native-omp|$build/c-native|omp" \
-        "c-native-lanes|$build/c-native|lanes" "c-native-lanes-omp|$build/c-native|lanes-omp" >> "$progs"
+        "c-native-lanes|$build/c-native|lanes" "c-native-lanes-omp|$build/c-native|lanes-omp" \
+        "c-stable|$build/c|stable" "c-stable-omp|$build/c|stable-omp" \
+        "c-symmerge|$build/c|symmerge" "c-symmerge-omp|$build/c|symmerge-omp" >> "$progs"
 fi
 if has cpp; then
     $CXX $CXXFLAGS -o "$build/cpp" "$here/cpp/bench.cpp"
@@ -140,17 +142,17 @@ for round in $(seq 1 "$ROUNDS"); do
     for k in $KERNELS; do
         while IFS='|' read -r name bin method; do
             # The lanes variants exist only for sum, the slices one only for
-            # the stencil.
+            # the stencil, the stable C sorts only for sort.
             # The E5 kernels have no restrict variant, and the ablation is
             # about the checks of the E4 ones.
             case $name:$k in
-                c-lanes*:sum|c-native-lanes*:sum|rust-slices:stencil|sword-rows*:stencil) ;;
-                c-lanes*:*|c-native-lanes*:*|rust-slices:*|sword-rows*:*) continue ;;
+                c-lanes*:sum|c-native-lanes*:sum|rust-slices:stencil|sword-rows*:stencil|c-stable*:sort|c-symmerge*:sort) ;;
+                c-lanes*:*|c-native-lanes*:*|rust-slices:*|sword-rows*:*|c-stable*:*|c-symmerge*:*) continue ;;
                 c-restrict:hist|c-restrict:scan|c-restrict:sort) continue ;;
                 sword-without-*:hist|sword-without-*:scan|sword-without-*:sort) continue ;;
             esac
             case $name in
-                c-serial|c-restrict|c-lanes|c-fastmath-serial|c-nofma-serial|c-native-serial|c-native-lanes|c-clang-serial) ts=1 ;;
+                c-serial|c-restrict|c-lanes|c-fastmath-serial|c-nofma-serial|c-native-serial|c-native-lanes|c-clang-serial|c-stable|c-symmerge) ts=1 ;;
                 *) ts=$THREADS ;;
             esac
             for t in $ts; do

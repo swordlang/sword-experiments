@@ -133,6 +133,8 @@ number of threads, and that division reaches the answer:
 | `sword` | `parallel for ... reduce(mergeHist: h)` | `par.Scan` | `par.Sort`, stable, so one right answer |
 | `c-serial` | one loop | one loop | `qsort` |
 | `c-omp` | `reduction(+ : h[:64])` | two passes, a block per thread | `qsort` per thread's block, then merges |
+| `c-stable`, `c-stable-omp` | | | merge sort with a buffer, cut as `par.Sort` is |
+| `c-symmerge`, `c-symmerge-omp` | | | `par.Sort`'s own algorithm in C: no buffer, merging by rotation |
 | `cpp-thread` | a histogram per thread | two passes | `std::sort` per block, `std::inplace_merge` |
 | `rust-rayon` | `fold` and `reduce` | two passes over `par_chunks` (rayon has no scan) | `par_sort_unstable_by_key` |
 | `zig-*` | a histogram per thread | two passes | `std.mem.sortUnstable` per block, then merges |
@@ -140,10 +142,20 @@ number of threads, and that division reaches the answer:
 
 The check of `hist` and `sort` is FNV-1a over the 64 bins' bits or the ids in
 their final order, so that every element counts in its place; `scan` takes the
-sum of its output, as the E4 kernels do. Sword's sort is the only stable one,
-which is what makes its answer unique; a stable sort in C would be one too.
+sum of its output, as the E4 kernels do. Sword's sort is stable, which is
+what makes its answer unique, and the other languages' usual sorts are not.
 C does not say whether `qsort` is stable, and C libraries differ, so even
-`c-serial` may give another order on another system. The ablation does not run on these
+`c-serial` may give another order on another system.
+
+The two stable sorts in C separate what stability costs from what Sword's
+algorithm costs. Both cut the input as `par.Sort` does — 64 pieces of at
+least 1024 records, whatever the thread count, then neighbouring runs merged
+pairwise — so both give Sword's answer. `c-stable` merges through a buffer
+as large as the input, which is what a C programmer would write.
+`c-symmerge` is `par.Sort` itself: insertion sort on blocks of 20, then
+merging in place by rotation (Kim and Kutzner's SymMerge, as in Go's
+`sort.Stable`), O(n log² n) moves. Sword's sort takes no buffer because it
+takes no allocator, and nothing in Sword allocates without one. The ablation does not run on these
 kernels.
 
 **The diagnostics table** (`diagnose/`). Six ordinary ways for a program's
