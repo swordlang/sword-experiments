@@ -1,5 +1,6 @@
-// The five kernels of the comparison in Go: one goroutine per block of the
-// range, partial sums combined in block order.
+// The kernels of the comparison in Go: one goroutine per block of the range,
+// partial sums combined in block order. The five of E4, and hist, scan and
+// sort of E5.
 //
 //	bench <kernel> <threads> [reps]
 //
@@ -26,6 +27,11 @@ const (
 	mandelIter = 256
 	bodies     = 4096
 	bodySteps  = 4
+	histN      = 10000000
+	bins       = 64
+	scanN      = 10000000
+	sortN      = 1000000
+	sortKeys   = 1000
 )
 
 var threads = 1
@@ -65,6 +71,95 @@ func blocks(n int, body func(lo, hi, k int)) {
 		}(k)
 	}
 	wg.Wait()
+}
+
+// A histogram per goroutine, added together in block order.
+func hist(xs []float64) []float64 {
+	part := make([][]float64, threads)
+	blocks(len(xs), func(lo, hi, k int) {
+		h := make([]float64, bins)
+		for _, x := range xs[lo:hi] {
+			h[int(x*64.0)] += x
+		}
+		part[k] = h
+	})
+	h := make([]float64, bins)
+	for _, p := range part {
+		for j := range h {
+			h[j] += p[j]
+		}
+	}
+	return h
+}
+
+// Each block totals itself, the totals are carried across in order, and each
+// block is written from its carry.
+func scan(xs, out []float64) {
+	carry := make([]float64, threads+1)
+	blocks(len(xs), func(lo, hi, k int) {
+		s := 0.0
+		for _, x := range xs[lo:hi] {
+			s += x
+		}
+		carry[k+1] = s
+	})
+	for k := 1; k <= threads; k++ {
+		carry[k] += carry[k-1]
+	}
+	blocks(len(xs), func(lo, hi, k int) {
+		s := carry[k]
+		for i := lo; i < hi; i++ {
+			s += xs[i]
+			out[i] = s
+		}
+	})
+}
+
+type rec struct {
+	key, id uint32
+}
+
+// sort.Slice on each block, then neighbouring blocks merged, the left one
+// first on a tie.
+func sortRecs(xs []rec) {
+	bounds := make([]int, threads+1)
+	for k := range bounds {
+		bounds[k] = len(xs) * k / threads
+	}
+	blocks(len(xs), func(lo, hi, k int) {
+		part := xs[lo:hi]
+		sort.Slice(part, func(i, j int) bool { return part[i].key < part[j].key })
+	})
+	tmp := make([]rec, len(xs))
+	for width := 1; width < threads; width *= 2 {
+		var wg sync.WaitGroup
+		for k := 0; k+width < threads; k += 2 * width {
+			lo, mid, hi := bounds[k], bounds[k+width], bounds[min(k+2*width, threads)]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				i, j, o := lo, mid, lo
+				for i < mid && j < hi {
+					if xs[j].key < xs[i].key {
+						tmp[o] = xs[j]
+						j++
+					} else {
+						tmp[o] = xs[i]
+						i++
+					}
+					o++
+				}
+				o += copy(tmp[o:], xs[i:mid])
+				copy(tmp[o:], xs[j:hi])
+				copy(xs[lo:hi], tmp[lo:hi])
+			}()
+		}
+		wg.Wait()
+	}
+}
+
+func fnv(c, w uint64) uint64 {
+	return (c ^ w) * 1099511628211
 }
 
 func sum(xs []float64) float64 {
@@ -242,6 +337,41 @@ func main() {
 			})
 		}
 		check = fmt.Sprintf("%x", math.Float64bits(total(p)))
+	case "hist":
+		xs := make([]float64, histN)
+		fill(1, xs)
+		var h []float64
+		for r := 0; r < reps; r++ {
+			timed(r, func() { h = hist(xs) })
+		}
+		c := uint64(14695981039346656037)
+		for _, b := range h {
+			c = fnv(c, math.Float64bits(b))
+		}
+		check = fmt.Sprintf("%x", c)
+	case "scan":
+		xs, out := make([]float64, scanN), make([]float64, scanN)
+		fill(1, xs)
+		for i := range xs {
+			xs[i] = 2.0*xs[i] - 1.0
+		}
+		for r := 0; r < reps; r++ {
+			timed(r, func() { scan(xs, out) })
+		}
+		check = fmt.Sprintf("%x", math.Float64bits(total(out)))
+	case "sort":
+		xs := make([]rec, sortN)
+		for r := 0; r < reps; r++ {
+			for i := range xs {
+				xs[i] = rec{uint32(unit(1, uint64(i)) * sortKeys), uint32(i)}
+			}
+			timed(r, func() { sortRecs(xs) })
+		}
+		c := uint64(14695981039346656037)
+		for _, x := range xs {
+			c = fnv(c, uint64(x.id))
+		}
+		check = fmt.Sprintf("%x", c)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown kernel")
 		os.Exit(2)

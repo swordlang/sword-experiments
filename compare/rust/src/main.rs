@@ -1,4 +1,5 @@
-// The five kernels of the comparison in Rust, with rayon's parallel iterators.
+// The kernels of the comparison in Rust, with rayon's parallel iterators: the
+// five of E4, and hist, scan and sort of E5.
 //
 //   bench <kernel> <threads> [reps] [slices]
 //
@@ -18,6 +19,11 @@ const MANDEL_W: usize = 2000;
 const MANDEL_ITER: u32 = 256;
 const BODIES: usize = 4096;
 const BODY_STEPS: usize = 4;
+const HIST_N: usize = 10_000_000;
+const BINS: usize = 64;
+const SCAN_N: usize = 10_000_000;
+const SORT_N: usize = 1_000_000;
+const SORT_KEYS: f64 = 1000.0;
 
 // splitmix64 of seed + i, scaled to [0, 1): every language draws the same bits.
 fn unit(seed: u64, i: u64) -> f64 {
@@ -41,6 +47,61 @@ fn total(xs: &[f64]) -> f64 {
         s += x;
     }
     s
+}
+
+// A histogram per piece of work rayon hands out, merged as the pieces finish.
+fn hist(xs: &[f64]) -> Vec<f64> {
+    xs.par_iter()
+        .fold(
+            || vec![0.0; BINS],
+            |mut h, &x| {
+                h[(x * 64.0) as usize] += x;
+                h
+            },
+        )
+        .reduce(
+            || vec![0.0; BINS],
+            |mut a, b| {
+                for j in 0..BINS {
+                    a[j] += b[j];
+                }
+                a
+            },
+        )
+}
+
+// rayon has no scan; the usual one is two passes over one block per thread.
+fn scan(xs: &[f64], out: &mut [f64]) {
+    let block = xs.len().div_ceil(rayon::current_num_threads());
+    let totals: Vec<f64> = xs.par_chunks(block).map(|c| c.iter().sum()).collect();
+    let mut carry = vec![0.0; totals.len()];
+    for k in 1..totals.len() {
+        carry[k] = carry[k - 1] + totals[k - 1];
+    }
+    out.par_chunks_mut(block)
+        .zip(xs.par_chunks(block))
+        .zip(carry.par_iter())
+        .for_each(|((o, x), &c)| {
+            let mut s = c;
+            for (o, &x) in o.iter_mut().zip(x) {
+                s += x;
+                *o = s;
+            }
+        });
+}
+
+#[derive(Clone, Copy)]
+struct Rec {
+    key: u32,
+    id: u32,
+}
+
+fn sort_recs(xs: &mut [Rec]) {
+    xs.par_sort_unstable_by_key(|r| r.key);
+}
+
+fn fnv(c: u64, w: u64) -> u64 {
+    (c ^ w).wrapping_mul(1099511628211)
 }
 
 fn sum(xs: &[f64]) -> f64 {
@@ -232,6 +293,39 @@ fn main() {
                 });
             }
             format!("{:x}", total(&p).to_bits())
+        }
+        "hist" => {
+            let mut xs = vec![0.0; HIST_N];
+            fill(1, &mut xs);
+            let mut h = vec![0.0; BINS];
+            for t in times.iter_mut() {
+                *t = timed(|| h = hist(&xs));
+            }
+            let c = h.iter().fold(14695981039346656037u64, |c, b| fnv(c, b.to_bits()));
+            format!("{:x}", c)
+        }
+        "scan" => {
+            let mut xs = vec![0.0; SCAN_N];
+            let mut out = vec![0.0; SCAN_N];
+            fill(1, &mut xs);
+            for x in xs.iter_mut() {
+                *x = 2.0 * *x - 1.0;
+            }
+            for t in times.iter_mut() {
+                *t = timed(|| scan(&xs, &mut out));
+            }
+            format!("{:x}", total(&out).to_bits())
+        }
+        "sort" => {
+            let mut xs = vec![Rec { key: 0, id: 0 }; SORT_N];
+            for t in times.iter_mut() {
+                for (i, x) in xs.iter_mut().enumerate() {
+                    *x = Rec { key: (unit(1, i as u64) * SORT_KEYS) as u32, id: i as u32 };
+                }
+                *t = timed(|| sort_recs(&mut xs));
+            }
+            let c = xs.iter().fold(14695981039346656037u64, |c, r| fnv(c, r.id as u64));
+            format!("{:x}", c)
         }
         _ => {
             eprintln!("unknown kernel");

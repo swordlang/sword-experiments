@@ -1,5 +1,6 @@
-// The five kernels of the comparison in C++, with std::thread: the range is
-// cut into one block per thread, and partial sums are combined in block order.
+// The kernels of the comparison in C++, with std::thread: the range is cut
+// into one block per thread, and partial sums are combined in block order.
+// The five of E4, and hist, scan and sort of E5.
 //
 //   bench <kernel> <threads> [reps]
 //
@@ -23,6 +24,11 @@ constexpr long MandelW = 2000;
 constexpr int MandelIter = 256;
 constexpr long Bodies = 4096;
 constexpr int BodySteps = 4;
+constexpr long HistN = 10000000;
+constexpr int Bins = 64;
+constexpr long ScanN = 10000000;
+constexpr long SortN = 1000000;
+constexpr int SortKeys = 1000;
 
 static int threads = 1;
 
@@ -148,6 +154,59 @@ static void nbody_step(long n, double m, std::vector<double> &p, std::vector<dou
   });
 }
 
+// A histogram per thread, added together in block order.
+static std::vector<double> hist(const std::vector<double> &xs) {
+  std::vector<std::vector<double>> part(threads, std::vector<double>(Bins));
+  blocks(xs.size(), [&](long lo, long hi, int k) {
+    std::vector<double> &h = part[k];
+    for (long i = lo; i < hi; i++) h[static_cast<int>(xs[i] * 64.0)] += xs[i];
+  });
+  std::vector<double> h(Bins);
+  for (auto &p : part)
+    for (int j = 0; j < Bins; j++) h[j] += p[j];
+  return h;
+}
+
+// Each block totals itself, the totals are carried across in order, and each
+// block is written from its carry.
+static void scan(const std::vector<double> &xs, std::vector<double> &out) {
+  std::vector<double> carry(threads + 1);
+  blocks(xs.size(), [&](long lo, long hi, int k) {
+    double s = 0.0;
+    for (long i = lo; i < hi; i++) s += xs[i];
+    carry[k + 1] = s;
+  });
+  for (int k = 1; k <= threads; k++) carry[k] += carry[k - 1];
+  blocks(xs.size(), [&](long lo, long hi, int k) {
+    double s = carry[k];
+    for (long i = lo; i < hi; i++) out[i] = s += xs[i];
+  });
+}
+
+struct Rec {
+  uint32_t key, id;
+};
+
+// std::sort on each block, then neighbouring blocks merged in place.
+static void sort_recs(std::vector<Rec> &xs) {
+  auto by_key = [](const Rec &a, const Rec &b) { return a.key < b.key; };
+  std::vector<long> bounds(threads + 1);
+  for (int k = 0; k <= threads; k++) bounds[k] = static_cast<long>(xs.size()) * k / threads;
+  blocks(xs.size(), [&](long lo, long hi, int) { std::sort(xs.begin() + lo, xs.begin() + hi, by_key); });
+  for (int width = 1; width < threads; width *= 2) {
+    std::vector<std::thread> pool;
+    for (int k = 0; k + width < threads; k += 2 * width) {
+      long lo = bounds[k], mid = bounds[k + width], hi = bounds[std::min(k + 2 * width, threads)];
+      pool.emplace_back([&, lo, mid, hi] {
+        std::inplace_merge(xs.begin() + lo, xs.begin() + mid, xs.begin() + hi, by_key);
+      });
+    }
+    for (auto &t : pool) t.join();
+  }
+}
+
+static uint64_t fnv(uint64_t c, uint64_t w) { return (c ^ w) * 1099511628211ULL; }
+
 static uint64_t bits(double v) {
   uint64_t b;
   std::memcpy(&b, &v, 8);
@@ -156,7 +215,7 @@ static uint64_t bits(double v) {
 
 int main(int argc, char **argv) {
   if (argc < 3) {
-    std::fprintf(stderr, "usage: bench sum|saxpy|stencil|mandelbrot|nbody threads [reps]\n");
+    std::fprintf(stderr, "usage: bench sum|saxpy|stencil|mandelbrot|nbody|hist|scan|sort threads [reps]\n");
     return 2;
   }
   std::string kernel = argv[1];
@@ -214,6 +273,27 @@ int main(int argc, char **argv) {
       });
     }
     check = bits(total(p));
+  } else if (kernel == "hist") {
+    std::vector<double> xs(HistN), h;
+    fill(1, xs);
+    for (int r = 0; r < reps; r++) timed(r, [&] { h = hist(xs); });
+    check = 14695981039346656037ULL;
+    for (double b : h) check = fnv(check, bits(b));
+  } else if (kernel == "scan") {
+    std::vector<double> xs(ScanN), out(ScanN);
+    fill(1, xs);
+    for (double &x : xs) x = 2.0 * x - 1.0;
+    for (int r = 0; r < reps; r++) timed(r, [&] { scan(xs, out); });
+    check = bits(total(out));
+  } else if (kernel == "sort") {
+    std::vector<Rec> xs(SortN);
+    for (int r = 0; r < reps; r++) {
+      for (long i = 0; i < SortN; i++)
+        xs[i] = Rec{static_cast<uint32_t>(unit(1, i) * SortKeys), static_cast<uint32_t>(i)};
+      timed(r, [&] { sort_recs(xs); });
+    }
+    check = 14695981039346656037ULL;
+    for (const Rec &x : xs) check = fnv(check, x.id);
   } else {
     std::fprintf(stderr, "unknown kernel\n");
     return 2;

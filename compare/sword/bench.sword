@@ -1,4 +1,6 @@
-// The five kernels of the comparison in Sword. The thread count is
+// The kernels of the comparison in Sword: the five of E4, and the three of
+// E5 (hist, scan, sort), where the usual way of writing them in the other
+// languages lets the answer depend on the threads. The thread count is
 // SWORD_THREADS; the program only prints it.
 //
 //   bench <kernel> <threads> [reps]
@@ -9,6 +11,7 @@ import "std/io"
 import "std/mem"
 import "std/num"
 import "std/os"
+import "std/par"
 import "std/strings"
 import "std/time"
 
@@ -20,6 +23,11 @@ const MandelW = 2000
 const MandelIter = 256
 const Bodies = 4096
 const BodySteps = 4
+const HistN = 10000000
+const Bins = 64
+const ScanN = 10000000
+const SortN = 1000000
+const SortKeys = 1000
 
 // splitmix64 of seed + i, scaled to [0, 1): every language draws the same bits.
 func unit(seed u64, i u64) f64 {
@@ -123,6 +131,57 @@ det func move(dt f64, a []f64, mut v []f64, mut p []f64) {
     }
 }
 
+// Every sample adds its own value into the bin it falls in: 64 sums of
+// floats, each one in an order the reduction fixes.
+struct Hist {
+    bins [64]f64
+}
+
+func mergeHist(a Hist, b Hist) Hist {
+    mut c := a
+    for j in 0..Bins {
+        c.bins[j] += b.bins[j]
+    }
+    return c
+}
+
+det func hist(xs []f64) Hist {
+    mut h := Hist{bins: [64]f64{}}
+    parallel for i in 0..xs.len reduce(mergeHist: h) {
+        h.bins[u64(xs[i] * 64.0)] += xs[i]
+    }
+    return h
+}
+
+func add(a f64, b f64) f64 {
+    return a + b
+}
+
+det func scan(xs []f64, mut out []f64) !void {
+    try par.Scan[f64](xs, out, add)
+}
+
+// A record sorted by its key alone; the many equal keys are where an unstable
+// sort shows how the work was divided.
+struct Rec {
+    key u32
+    id  u32
+}
+
+func byKey(a Rec, b Rec) bool {
+    return a.key < b.key
+}
+
+det func sortRecs(mut xs []Rec) {
+    par.Sort[Rec](xs, byKey)
+}
+
+// FNV-1a over 64-bit words, the checksum of a sequence where every element
+// counts in its place.
+func fnv(c u64, w u64) u64 {
+    return (c ^ w) *% 1099511628211
+}
+
 func median(mut ms []i64) i64 {
     for i in 1..ms.len {
         mut j := i
@@ -148,7 +207,7 @@ func alloc(mut heap mem.Allocator, n u64) ![]f64 {
 
 func main() !int {
     if os.Argc() < 3 {
-        try io.Println("usage: bench sum|saxpy|stencil|mandelbrot|nbody threads [reps]")
+        try io.Println("usage: bench sum|saxpy|stencil|mandelbrot|nbody|hist|scan|sort threads [reps]")
         return 2
     }
     kernel := os.Arg(1)
@@ -228,6 +287,48 @@ func main() !int {
             times[r] = time.Since(start).AsNanos()
         }
         check = bitsOf(total(p))
+    } else if kernel == "hist" {
+        mut xs := try alloc(&heap, HistN)
+        fill(1, xs)
+        mut h := Hist{bins: [64]f64{}}
+        for r in 0..reps {
+            start := time.Now()
+            h = hist(xs)
+            times[r] = time.Since(start).AsNanos()
+        }
+        mut c u64 = 14695981039346656037
+        for j in 0..Bins {
+            c = fnv(c, bitsOf(h.bins[j]))
+        }
+        check = c
+    } else if kernel == "scan" {
+        mut xs := try alloc(&heap, ScanN)
+        mut out := try alloc(&heap, ScanN)
+        fill(1, xs)
+        for i in 0..xs.len {
+            xs[i] = 2.0 * xs[i] - 1.0
+        }
+        for r in 0..reps {
+            start := time.Now()
+            try scan(xs, out)
+            times[r] = time.Since(start).AsNanos()
+        }
+        check = bitsOf(total(out))
+    } else if kernel == "sort" {
+        mut xs := mem.Alloc[Rec](&heap, SortN) orelse return error.OutOfMemory
+        for r in 0..reps {
+            for i in 0..xs.len {
+                xs[i] = Rec{key: u32(unit(1, i) * f64(SortKeys)), id: u32(i)}
+            }
+            start := time.Now()
+            sortRecs(xs)
+            times[r] = time.Since(start).AsNanos()
+        }
+        mut c u64 = 14695981039346656037
+        for x in xs {
+            c = fnv(c, u64(x.id))
+        }
+        check = c
     } else {
         try io.Println("unknown kernel")
         return 2

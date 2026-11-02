@@ -1,0 +1,21 @@
+// Refining until a time budget runs out: how far it got is the clock's
+// answer, not the arguments'.
+
+import "std/io"
+import "std/time"
+
+det func refine(x f64) f64 {
+    start := time.Now()
+    mut guess := x
+    mut steps u64 = 0
+    for time.Since(start).AsNanos() < 200000 {
+        guess = 0.5 * (guess + x / guess)
+        steps += 1
+    }
+    return guess + f64(steps)
+}
+
+func main() !int {
+    try io.Printf("{}\n", refine(2.0))
+    return 0
+}

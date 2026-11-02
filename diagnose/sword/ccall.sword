@@ -1,0 +1,18 @@
+// A seed taken from C: the process id is different on every run.
+
+import "std/io"
+
+extern func getpid() i32
+
+det func seeded(n u64) u64 {
+    mut z := u64(getpid())
+    for i in 0..n {
+        z = z *% 6364136223846793005 +% 1442695040888963407
+    }
+    return z
+}
+
+func main() !int {
+    try io.Printf("{}\n", seeded(10))
+    return 0
+}
