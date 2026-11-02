@@ -166,6 +166,32 @@ the Rust ones with `-D warnings`. `diagnose/run.sh` runs each twenty times
 and counts the answers (`diagnose.csv`): in every language, the program
 compiles and its answer moves; Sword is the one that says so when asked.
 
+**How much of the parallel code is det** (`det/`). Sword infers `det` for every function, and says for each one that is not
+what took it away (`shield det`). Counted over every function, that mixes in
+the ones that print or read the clock, which are not det and never run a
+task. `det/parallel.py` counts the functions whose own body has a `scope`, a
+`spawn` or a `parallel for`, and how many of them are det. `det/run.sh` runs
+it over five sets: the two ports in `port/`, the Sword programs here (not
+`diagnose/`, which is written to be refused), the language's tests that
+compile, and its standard library, each package listed as a library. With
+Sword's develop e5982bd:
+
+| set | functions | det | parallel | parallel and det | not det, by cause |
+|---|---:|---:|---:|---:|---|
+| PolyBench port | 73 | 40 | 28 | 28 | |
+| Cilk port | 148 | 120 | 37 | 29 | atomic 7, out of the language 1 |
+| these experiments | 44 | 37 | 14 | 14 | |
+| the language's tests | 543 | 300 | 93 | 40 | atomic 33, out of the language 16, shared 4 |
+| standard library | 540 | 288 | 2 | 0 | atomic 2 |
+
+Every parallel function in the code written to compute something is det. In
+the Cilk port most of the atomics count allocation failures (`fails` in
+cholesky, fft, lu and strassen), where a task returning `!void` would carry
+the error and keep the function det; knapsack's atomic bound is the
+algorithm. The one out of the language is fib's `main`, which spawns and
+also prints. The tests are not a sample of ordinary code: many are there to
+exercise `atomic`, `shared` and the system.
+
 Every other build is for the base of its architecture: x86-64 with SSE2 and
 no AVX, armv8-a. The `-native` builds show what the machine's own vector unit
 changes. Sword has no switch for it, so `compare/run.sh` takes its IR from
@@ -245,6 +271,12 @@ python3 compare/analyze.py > results/compare.md
 compiler go into `compare-env.txt`, and the `Cargo.lock` that was built with
 into `compare-Cargo.lock`. On GitHub, the workflow takes `experiments: compare`
 (or `both`), with Rust, Go and Zig at the versions it pins.
+
+The det count needs only the language's repository with its compiler built:
+
+```sh
+SWORD=../sword ./det/run.sh          # results/det.jsonl, and the table
+```
 
 `ONLY=math` runs only E3, which needs no OpenMP. `NOTE="..."` records a note
 about the machine in `env.txt` (that it is emulated, for instance). `THREADS`,
