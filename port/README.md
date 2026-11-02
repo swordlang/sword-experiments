@@ -87,6 +87,35 @@ four kinds, and the first is most of them:
 | the parallel loop writes a column | the array kept or copied transposed, or a temporary and a second loop that copies across, because a slice is cut into rows and never into columns | adi, correlation, covariance, deriche, gramschmidt, symm |
 | the parallel loop reads, at other places, the array it writes, places no iteration changes | a copy of what is read, taken before the loop: a row (floyd-warshall, lu, ludcmp) or the whole array (trmm), because two slices of one array count as the same memory however they are cut | floyd-warshall, lu, ludcmp, trmm |
 
+### How much a rewrite costs
+
+"Rewritten" covers a kernel whose only change is how a row is indexed and one
+that copies an array before every step, so `polybench/measure.py` splits it
+by what the sources say. It counts, in the C's `kernel_` function and in the
+port's functions other than `main` and `start`, the statement lines, the
+loops (a helper's once per call) and the arrays the kernel is handed. A
+rewrite is **form** when the port has no loop and no array the C does not,
+and **work** when it has: a copy, a transpose, a second loop.
+
+| class | kernels | statement lines, C → Sword | loops added | arrays added |
+|---|---|---|---|---|
+| as is | 6 | 57 → 48 | 0 | 1 |
+| rewritten, form | 11 | 146 → 150 | 0 | −3 |
+| rewritten, work | 9 | 172 → 224 | 14 | 9 |
+| sequential | 4 | 36 → 40 | 0 | 0 |
+
+The split falls along the kinds above. Form is the rows taken through
+`chunks` (2mm, 3mm, doitgen, fdtd-2d, gemm, gemver, heat-3d, jacobi-2d,
+syr2k, syrk) and adi, which keeps one array transposed at no cost. Work is
+the columns and the copies (correlation, covariance, deriche,
+floyd-warshall, gramschmidt, lu, ludcmp, symm, trmm). So 17 of the 26
+kernels with a parallel loop go in with no loop and no array the C does not
+have, and 9 pay for it with a copy or a transpose. The array counted against
+durbin, "as is", is a temporary the C declares inside its kernel and the port
+is handed; the three fewer under form are temporaries the C is handed and
+the port makes an array of each iteration's own, as OpenMP's `private`
+would (p and q in adi, sum in doitgen).
+
 Three classifications rest on a judgement the reader may want to check.
 atax and bicg are "as is" because the C kernel has a parallel loop that
 clears an output; in bicg it is the only one, and its main nest is
@@ -135,6 +164,15 @@ by kind:
 | two arrays cut side by side, a run of each to one task, or one cut where its values say | the two held as one array of pairs (fft), or the recursion rewritten as levels whose pieces find their place by binary search (cilksort) | cilksort, fft |
 | a search whose spawns share state: a bound, a killer table, an inlet that updates the parent | an atomic for the bound (knapsack), the heuristic dropped below the root (ck), the answers taken in order after the scope | ck, knapsack, queens |
 | spawns on halves of the rows, and rows allocated in parallel with one `malloc` each | the halves as chunks of the rows, rounded up where the C rounds down; the grid one allocation, made before | heat |
+
+The same split into form and work, by the same rule but by hand, since a
+Cilk program is a whole program whose lines are mostly its options and
+timing:
+
+| rewritten | programs | what is added |
+|---|---|---|
+| form (3) | heat, knapsack, queens | nothing the C does not do: heat cuts its stripes by `chunks` and makes its grid in one allocation instead of a parallel one per row; knapsack's bound is an atomic, as racy as the C's global; queens' children write a slot each, which the counting rules take as syntax |
+| work (8) | cholesky, cilksort, ck, fft, plu, rectmul, spacemul, strassen | a copy of what a task reads (cholesky, plu); temporaries and a loop that copies across (fft, strassen); the recursion as levels with a binary search per piece (cilksort); a second walk to count flops, since a loop over pieces takes no reduction (rectmul, spacemul); a heuristic left out below the root, so more of the tree is searched (ck) |
 
 Four are refused, each for one reason. In matmul and lu, a spawn writes half
 of the columns of a block, which is two runs apart in any layout that also
