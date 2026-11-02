@@ -1,0 +1,5 @@
+{"set": "polybench", "functions": 73, "det": 40, "parallel": 28, "parallel_det": 28, "parallel_det_conditional": 0, "parallel_not_det_by_cause": {}}
+{"set": "cilk", "functions": 148, "det": 120, "parallel": 37, "parallel_det": 29, "parallel_det_conditional": 0, "parallel_not_det_by_cause": {"atomic": 7, "outside": 1}}
+{"set": "experiments", "functions": 44, "det": 37, "parallel": 14, "parallel_det": 14, "parallel_det_conditional": 0, "parallel_not_det_by_cause": {}}
+{"set": "tests", "functions": 543, "det": 300, "parallel": 93, "parallel_det": 40, "parallel_det_conditional": 0, "parallel_not_det_by_cause": {"atomic": 33, "outside": 16, "shared": 4}}
+{"set": "std", "functions": 540, "det": 288, "parallel": 2, "parallel_det": 0, "parallel_det_conditional": 0, "parallel_not_det_by_cause": {"atomic": 2}}
