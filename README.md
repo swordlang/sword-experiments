@@ -316,3 +316,14 @@ docker run --rm -v "$PWD/sword.tar:/sword.tar:ro" -v "$PWD:/exp" sword-ci:arm64 
   says `det`, on every machine, with the same messages. Without `det`, every
   program in every language compiled without a warning and gave more than one
   answer in its twenty runs on every machine, from 2 (`senders`) to 20.
+- E1 to E3 again against Sword 0.4.0 (tag `v0.4.0`, commit `dbf77e0`) are in
+  `results/v0.4.0/`, tables in `summary.md` there, from run 41358624648 on
+  GitHub's three machines (AMD EPYC 7763, arm64 Neoverse N2, virtual Apple
+  M1). The `bits/` that E3 compares are not kept, as for 0.2.0. Every Sword
+  method gave one answer over the three machines and every thread count, and
+  `std/num` the same bits for every argument on all three, where the C
+  library differed between Linux and macOS at 7 (`log`) to 40 715 (`cos`) of
+  a million. Not every answer is 0.2.0's: since 0.4 a float `reduce(+)` adds
+  in sixteen sums per piece, so `sword-plain` in E1 and `sword-plain` and
+  `sword-mix` in E2 give other bits than they did, each still one answer
+  everywhere.
