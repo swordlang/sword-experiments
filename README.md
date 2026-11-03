@@ -388,3 +388,16 @@ docker run --rm -v "$PWD/sword.tar:/sword.tar:ro" -v "$PWD:/exp" sword-ci:arm64 
   differ in pieces its kernels do not use, and says nothing either way. In
   the diagnostics, Sword's `ticket` without `det` gave one answer in its
   twenty runs on macOS, and more than one on both Linux machines.
+- Everything again against Sword 0.4.2 (tag `v0.4.2`, commit `7f186d7`) is in
+  `results/v0.4.2/`, from run 41537014393 on the same three machines. 0.4.2
+  refuses more programs and changes no code these programs compile to: every
+  Sword answer in E1, E2, E4 and E5, on every machine and thread count, has
+  the bits it had on 0.4.1. In the diagnostics every program with `det` is
+  refused as before, and every program without it, in each language, gave
+  more than one answer in its twenty runs on every machine, Sword's `ticket`
+  on macOS included (two). The port gives what it gave on 0.4.1 with the
+  tag's shield (PolyBench 6 as is, 20 rewritten, 4 sequential, all 30 the
+  C's bits at 1 and 4 threads; Cilk 2, 11 and 4 refused, 16 of 17 the C's
+  answer, all 17 agreeing at 1 and 4 threads), and so does the `det` count
+  of the port, these experiments and `std`; only the language's own tests
+  grew (`results/det.jsonl`).
