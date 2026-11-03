@@ -1,0 +1,13 @@
+fn,count,ns_per_call
+libm-sin,1000000,22.28
+libm-sinnear,1000000,10.42
+libm-cos,1000000,22.10
+libm-exp,1000000,8.43
+libm-expunit,1000000,3.88
+libm-log,1000000,4.23
+num-sin,1000000,25.07
+num-sinnear,1000000,2.81
+num-cos,1000000,24.95
+num-exp,1000000,7.85
+num-expunit,1000000,8.54
+num-log,1000000,8.11
